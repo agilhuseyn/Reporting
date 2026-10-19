@@ -5,7 +5,7 @@ import { login, logout, requireAuth, needCap, needAdmin, audit, publicUser, ALL_
 import { reportsFor, effective, visibleColumns } from './perms.js';
 import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } from './connections.js';
 import { testLdap } from './ldap.js';
-import { analyze } from './sqlparse.js';
+import { analyze, slug } from './sqlparse.js';
 import { runForUser, runTest, runOptions, detectParams, guardAuto, HttpError } from './runner.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -154,8 +154,11 @@ async function saveColumns(client, reportId, columns) {
 
 admin.post('/reports', needCap('reports'), wrap(async (req, res) => {
   const b = req.body || {};
-  if (!/^[A-Za-z0-9_]{2,60}$/.test(b.code || '')) throw new HttpError(400, 'Kod: hərf, rəqəm, alt xətt (2-60)');
   if (!b.name_az) throw new HttpError(400, 'Ad (AZ) lazımdır');
+  // Hesabat kodu arxa fonda adından yaradılır; istifadəçi görmür, əl ilə yazılmır.
+  const baseCode = (slug(b.name_az) || 'hesabat').slice(0, 50);
+  let code = baseCode;
+  for (let i = 2; (await pool.query('SELECT 1 FROM portal.reports WHERE code = $1', [code])).rowCount; i++) code = `${baseCode}_${i}`;
   await guardAuto(b.sql, b.kind || 'query');
   const client = await pool.connect();
   try {
@@ -163,14 +166,14 @@ admin.post('/reports', needCap('reports'), wrap(async (req, res) => {
     const r = await client.query(
       `INSERT INTO portal.reports (code,category_id,kind,name_az,name_en,name_ru,description,sql,params,updated_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [b.code, b.category_id || null, b.kind || 'query', b.name_az, b.name_en || b.name_az, b.name_ru || b.name_az,
+      [code, b.category_id || null, b.kind || 'query', b.name_az, b.name_en || b.name_az, b.name_ru || b.name_az,
         b.description || '', b.sql, JSON.stringify(b.params || []), req.user.empid]);
     const id = r.rows[0].id;
     await client.query('INSERT INTO portal.report_versions (report_id,version,sql,changed_by) VALUES ($1,1,$2,$3)',
       [id, b.sql, req.user.empid]);
     await saveColumns(client, id, b.columns || []);
     await client.query('COMMIT');
-    await audit(req.user.empid, 'report.create', { code: b.code });
+    await audit(req.user.empid, 'report.create', { code });
     res.json({ id });
   } catch (e) {
     await client.query('ROLLBACK');

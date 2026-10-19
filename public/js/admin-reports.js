@@ -9,6 +9,7 @@ const blank = () => ({
 
 export async function adminReports(root, me) {
   const canEdit = me.caps.includes('reports');
+  const isAdmin = me.role === 'admin'; // kodları yalnız admin görür
   const side = h('aside', { class: 'side' });
   const main = h('main', { class: 'content col gap16' });
   clear(root, h('div', { class: 'layout' }, side, main));
@@ -149,7 +150,7 @@ export async function adminReports(root, me) {
   function columnRow(c) {
     const inp = (k) => h('input', { class: 'inp sm', value: c[k] || '', oninput: (e) => { c[k] = e.target.value; } });
     return h('tr', {},
-      h('td', { class: 'mono' }, c.code), h('td', { class: 'mono small muted' }, c.src || ''), h('td', {}, inp('label_az')), h('td', {}, inp('label_en')), h('td', {}, inp('label_ru')),
+      isAdmin ? h('td', { class: 'mono' }, c.code) : null, isAdmin ? h('td', { class: 'mono small muted' }, c.src || '') : null, h('td', {}, inp('label_az')), h('td', {}, inp('label_en')), h('td', {}, inp('label_ru')),
       h('td', {}, h('select', { class: 'inp sm', onchange: (e) => { c.type = e.target.value; } },
         ['text', 'number', 'date'].map((x) => h('option', { value: x, selected: x === c.type }, t(`ptype.${x}`))))),
       h('td', {}, h('select', { class: 'inp sm', onchange: (e) => { c.sensitivity = e.target.value; } },
@@ -185,7 +186,7 @@ export async function adminReports(root, me) {
           canEdit ? h('button', { class: 'btn primary', onclick: save }, t('save')) : null),
         h('div', { class: 'grid3' }, field(`${t('name')} (AZ)`, text('name_az')), field(`${t('name')} (EN)`, text('name_en')), field(`${t('name')} (RU)`, text('name_ru'))),
         h('div', { class: 'row wrap gap16 end' },
-          field(t('code'), text('code', { readOnly: !!rep.id })),
+          isAdmin && rep.id ? field(t('code'), h('span', { class: 'mono tag' }, rep.code)) : null,
           field(t('category'), h('div', { class: 'row gap6' }, catSel, canEdit ? h('button', { class: 'btn sm', onclick: async () => {
             const n = prompt(t('categoryName'));
             if (!n) return;
@@ -221,7 +222,7 @@ export async function adminReports(root, me) {
         h('div', { class: 'toolbar' }, h('b', {}, t('columns')), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('columnsHint'))),
         rep.columns.length
           ? h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
-              h('thead', {}, h('tr', {}, [t('code'), t('srcName'), 'AZ', 'EN', 'RU', t('type'), t('sensitivity')].map((x) => h('th', {}, x)))),
+              h('thead', {}, h('tr', {}, [...(isAdmin ? [t('code'), t('srcName')] : []), 'AZ', 'EN', 'RU', t('type'), t('sensitivity')].map((x) => h('th', {}, x)))),
               h('tbody', {}, rep.columns.map(columnRow))))
           : h('div', { class: 'note' }, t('noColumns'))),
       rep.versions?.length ? h('div', { class: 'card pad' },
