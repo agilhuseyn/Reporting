@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import { migrate } from './migrate.js';
 import { api } from './api.js';
 import { pool } from './db.js';
+import { seedSales } from './demo-sales.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -41,3 +42,21 @@ try {
   process.exit(1);
 }
 app.listen(port, () => console.log(`Hesabat Portalı: port ${port}`));
+
+// Genişləndirilmiş satış test datası: server açıldıqdan sonra arxa fonda, bir əməliyyatda yaradılır.
+// Xəta olsa portal işləməyə davam edir.
+if (process.env.SEED_SALES_DEMO !== '0') {
+  (async () => {
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      await seedSales(c);
+      await c.query('COMMIT');
+    } catch (e) {
+      await c.query('ROLLBACK').catch(() => {});
+      console.error('Satış test datası yaradılmadı:', e.message);
+    } finally {
+      c.release();
+    }
+  })();
+}
