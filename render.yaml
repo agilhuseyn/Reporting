@@ -1,0 +1,29 @@
+databases:
+  - name: reporting-db
+    plan: free
+    databaseName: reporting
+    user: reporting
+
+services:
+  - type: web
+    name: hesabat-portali
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: reporting-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SEED_PASSWORD
+        generateValue: true
+      - key: REPORT_RO_PASSWORD
+        generateValue: true
