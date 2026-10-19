@@ -8,9 +8,33 @@ import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } fro
 import { testAd } from './ldap.js';
 import { analyze, slug } from './sqlparse.js';
 import { keyOf, keyOrNull, keysOf } from './ids.js';
+import { violation, looksLikeInjection } from './guard.js';
+import { GuardError } from './errors.js';
 import { runForUser, runDetailForUser, runTest, runOptions, detectParams, guardAuto, HttpError } from './runner.js';
 
-const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+// Xətalar burada tutulur. Qanunsuz cəhd (yanlış formatlı ID, görünməyən dəyər, admin ekranında zərərli SQL)
+// aşkarlananda istifadəçi dərhal bloklanır və nə etmək istədiyi jurnala yazılır.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(async (e) => {
+  if (req.user) {
+    if (e?.violation) e = await violation(req, e.violation.kind, e.violation.what, e.violation.sample, e);
+    else if (e instanceof GuardError && String(req.originalUrl).startsWith('/api/admin/')) {
+      // Yalnız admin ekranında yazılan SQL. İcra zamanı saxlanmış hesabatın SQL-i istifadəçiyə aid deyil.
+      e = await violation(req, 'dangerous_sql', `Qadağan SQL yazmağa cəhd: ${e.message}`, req.body?.sql ?? req.body?.drill?.sql, e);
+    }
+  }
+  next(e);
+});
+
+// Hesabata yetkisi olmayan istifadəçiyə ekran bu hesabatı göstərmir. Yenə də sorğu gəlirsə, əllə göndərilib.
+const denyReport = (req, report, what) =>
+  violation(req, 'report_access', `${what}: ${report.code}`, undefined, new HttpError(403, 'Bu hesabata yetkiniz yoxdur'));
+
+// Parametr və detal dəyərində açıq SQL injection əlaməti
+async function scanInjection(req, values) {
+  for (const [name, v] of Object.entries(values)) {
+    if (looksLikeInjection(v)) throw await violation(req, 'injection_param', `Parametrdə SQL injection əlaməti: ${name}`, v, new HttpError(400, 'Parametr dəyəri yanlışdır'));
+  }
+}
 export const api = express.Router();
 
 // Giriş ekranı üçün (autentifikasiyasız): portal yalnız tətbiq kimi açılırmı
@@ -27,7 +51,7 @@ api.get('/me', (req, res) => res.json(req.user));
 api.get('/reports', wrap(async (req, res) => res.json(await reportsFor(req.user.empid))));
 
 async function loadReport(id) {
-  const key = await keyOf('report', id).catch(() => { throw new HttpError(404, 'Hesabat tapılmadı'); });
+  const key = await keyOf('report', id).catch((e) => { throw e.violation ? e : new HttpError(404, 'Hesabat tapılmadı'); });
   const r = await pool.query('SELECT * FROM portal.reports WHERE id = $1 AND active', [key]);
   if (!r.rows[0]) throw new HttpError(404, 'Hesabat tapılmadı');
   return r.rows[0];
@@ -36,7 +60,7 @@ async function loadReport(id) {
 api.get('/reports/:id/meta', wrap(async (req, res) => {
   const report = await loadReport(req.params.id);
   const perm = await effective(req.user.empid, report.id);
-  if (!perm.allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
+  if (!perm.allowed) throw await denyReport(req, report, 'Yetkisiz hesabatın məlumatını istədi');
   const rcols = (await pool.query(
     'SELECT * FROM portal.report_columns WHERE report_id = $1 ORDER BY pos, code', [report.id])).rows;
   const vis = visibleColumns(perm, rcols);
@@ -57,7 +81,7 @@ api.get('/reports/:id/meta', wrap(async (req, res) => {
 api.get('/reports/:id/options/:param', wrap(async (req, res) => {
   const report = await loadReport(req.params.id);
   const perm = await effective(req.user.empid, report.id);
-  if (!perm.allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
+  if (!perm.allowed) throw await denyReport(req, report, 'Yetkisiz hesabatın siyahısını istədi');
   const p = report.params.find((x) => x.name === req.params.param);
   if (!p?.optionsSql) throw new HttpError(404, 'Siyahı yoxdur');
   try {
@@ -76,7 +100,7 @@ const userActive = new Map();
 // İcra üçün ortaq qayda: yetki əvvəl, parametr yoxlaması, sürət və paralel limit.
 async function limitedRun(req, report, fn) {
   // Yetki ilk yoxlanır: yetkisiz istifadəçi hesabatın parametrlərini belə görməsin
-  if (!(await effective(req.user.empid, report.id)).allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
+  if (!(await effective(req.user.empid, report.id)).allowed) throw await denyReport(req, report, 'Yetkisiz hesabatı icra etməyə cəhd');
   const given = req.body?.params || {};
   const params = {};
   for (const p of report.params) {
@@ -89,6 +113,8 @@ async function limitedRun(req, report, fn) {
     }
     params[p.name] = v;
   }
+  // Ekranın göndərmədiyi sahələr də daxil olmaqla, gələn bütün parametr dəyərləri yoxlanır
+  await scanInjection(req, { ...(typeof given === 'object' ? given : {}), ...(typeof req.body?.key === 'string' ? { key: req.body.key } : {}) });
   if (runLimiter.hit(req.user.empid)) throw new HttpError(429, 'Çox sorğu. Bir az gözləyin.');
   if ((userActive.get(req.user.empid) || 0) >= 2) throw new HttpError(429, 'Əvvəlki sorğularınız hələ işləyir.');
   userActive.set(req.user.empid, (userActive.get(req.user.empid) || 0) + 1);
@@ -122,7 +148,7 @@ api.post('/reports/:id/detail', wrap(async (req, res) => {
 api.post('/reports/:id/export-log', wrap(async (req, res) => {
   const report = await loadReport(req.params.id);
   const perm = await effective(req.user.empid, report.id);
-  if (!perm.canExport) throw new HttpError(403, 'Export üçün yetkiniz yoxdur');
+  if (!perm.canExport) throw await denyReport(req, report, 'Export yetkisi olmadan export bildirişi göndərdi');
   await audit(req.user.empid, 'export', { report: report.code, rows: req.body?.rows ?? null });
   res.json({ ok: true });
 }));
@@ -416,7 +442,7 @@ admin.get('/subjects', needCap('permissions', 'users'), wrap(async (_req, res) =
 
 admin.get('/users', needCap('users'), wrap(async (_req, res) => {
   const r = await pool.query(
-    `SELECT u.uid AS id, u.empid, u.name, u.role, u.caps,
+    `SELECT u.uid AS id, u.empid, u.name, u.role, u.caps, u.blocked_at, u.blocked_reason,
             (SELECT p.uid FROM portal.positions p WHERE p.id = u.position_id) AS position_id, u.active,
             COALESCE((SELECT array_agg(g.uid::text) FROM portal.user_groups ug JOIN portal.groups g ON g.id = ug.group_id
                       WHERE ug.empid = u.empid), '{}') AS groups
@@ -495,6 +521,16 @@ admin.put('/users/:id', needCap('users'), wrap(async (req, res) => {
   } finally {
     client.release();
   }
+}));
+
+// Avtomatik blokdan yalnız admin çıxara bilər
+admin.post('/users/:id/unblock', needAdmin, wrap(async (req, res) => {
+  const empid = await keyOf('user', req.params.id);
+  const r = await pool.query(
+    'UPDATE portal.users SET blocked_at = NULL, blocked_reason = NULL WHERE empid = $1 AND blocked_at IS NOT NULL RETURNING empid', [empid]);
+  if (!r.rowCount) throw new HttpError(400, 'İstifadəçi bloklanmayıb');
+  await audit(req.user.empid, 'security.unblock', { empid });
+  res.json({ ok: true });
 }));
 
 admin.post('/positions', needCap('users'), wrap(async (req, res) => {

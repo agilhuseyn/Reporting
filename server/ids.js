@@ -1,6 +1,6 @@
 // Brauzer ilə server arasında yalnız təsadüfi UUID işlədilir. Bazadakı ardıcıl nömrələr (və EMPID) çöldən görünmür.
 import { pool } from './db.js';
-import { HttpError } from './errors.js';
+import { HttpError, markViolation } from './errors.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const isUid = (v) => typeof v === 'string' && UUID_RE.test(v);
@@ -16,7 +16,8 @@ const TABLES = {
 
 // UUID -> daxili açar. Yanlış formatda və ya tapılmayanda eyni 404 cavabı (varlığı bildirmir).
 export async function keyOf(kind, uid, db = pool) {
-  if (!isUid(uid)) throw new HttpError(404, 'Tapılmadı');
+  // Brauzer həmişə düzgün formatlı UUID göndərir. Başqa format əllə dəyişdirmə deməkdir.
+  if (!isUid(uid)) throw markViolation(new HttpError(404, 'Tapılmadı'), 'bad_id', 'Yanlış formatlı ID göndərdi', typeof uid === 'string' ? uid : JSON.stringify(uid));
   const [table, col] = TABLES[kind];
   const r = await db.query(`SELECT ${col} AS k FROM ${table} WHERE uid = $1`, [uid.toLowerCase()]);
   if (!r.rowCount) throw new HttpError(404, 'Tapılmadı');

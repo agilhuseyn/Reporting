@@ -48,12 +48,13 @@ export async function userPage(root, reportId) {
   }
   drawSide();
 
-  const id = reportId || list[0]?.id;
+  // Ünvandakı ID yalnız sizin siyahınızdadırsa açılır (köhnə və ya başqasından gələn link səhv sorğu göndərməsin)
+  const id = list.some((r) => r.id === reportId) ? reportId : list[0]?.id;
   if (!id) {
     clear(main, h('div', { class: 'empty' }, t('noReports')));
     return;
   }
-  if (!reportId) {
+  if (reportId !== id) {
     history.replaceState(null, '', `#/reports/${id}`);
     drawSide();
   }

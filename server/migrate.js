@@ -59,6 +59,8 @@ const DDL = [
 const PATCH_DDL = [
   `ALTER TABLE portal.users ADD COLUMN IF NOT EXISTS session_epoch int NOT NULL DEFAULT 0`,
   `ALTER TABLE portal.reports ADD COLUMN IF NOT EXISTS drill jsonb`,
+  `ALTER TABLE portal.users ADD COLUMN IF NOT EXISTS blocked_at timestamptz`,
+  `ALTER TABLE portal.users ADD COLUMN IF NOT EXISTS blocked_reason text`,
   // Çöldən görünən təsadüfi UUID. Mövcud sətirlər avtomatik UUID alır; daxili açarlar dəyişmir.
   ...['reports', 'report_categories', 'positions', 'groups', 'users'].flatMap((t) => [
     `ALTER TABLE portal.${t} ADD COLUMN IF NOT EXISTS uid uuid NOT NULL DEFAULT gen_random_uuid()`,

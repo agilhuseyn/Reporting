@@ -6,6 +6,7 @@ import { HttpError } from './errors.js';
 import { loadConn } from './connections.js';
 import { adSignIn } from './ldap.js';
 import { makeLimiter, makeGate } from './security.js';
+import { violation, anon, BLOCKED_MSG } from './guard.js';
 
 let secret = process.env.JWT_SECRET;
 if (!secret) {
@@ -75,6 +76,8 @@ export async function login(req, res) {
     throw new HttpError(401, 'Ad və ya parol yanlışdır');
   }
   failPair.clear(`${ip}|${empid}`);
+  // Parol düzgündür, amma admin bu hesabı bloklayıb. Blok yalnız admin tərəfindən qaldırılır.
+  if (u.blocked_at) throw new HttpError(403, BLOCKED_MSG);
   const token = jwt.sign({ empid: u.empid, e: u.session_epoch || 0 }, secret, { expiresIn: '8h', algorithm: 'HS256' });
   res.cookie('token', token, {
     httpOnly: true,
@@ -104,13 +107,33 @@ export function publicUser(u) {
   return { id: u.uid, empid: u.empid, name: u.name, role: u.role, caps };
 }
 
+// İmzası yoxlanmamış tokendən yalnız jurnal üçün "kimin adını iddia edir" oxunur (heç vaxt etibar edilmir)
+function claimedEmpid(token) {
+  try {
+    return String(JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8'))?.empid ?? '').slice(0, 64);
+  } catch {
+    return '';
+  }
+}
+
 export async function requireAuth(req, _res, next) {
   try {
     const token = req.cookies?.token;
     if (!token) throw new HttpError(401, 'Giriş tələb olunur');
-    const { empid, e } = jwt.verify(token, secret, { algorithms: ['HS256'] });
+    let payload;
+    try {
+      payload = jwt.verify(token, secret, { algorithms: ['HS256'] });
+    } catch (err) {
+      // Müddəti bitmiş token normaldır. İmzası pozulmuş/saxta token isə jurnala yazılır (kimin adından olduğu bilinmir, heç kəs bloklanmır).
+      if (err?.name !== 'TokenExpiredError') {
+        anon(req, 'bad_token', 'Saxta və ya pozulmuş token göndərildi', { claimed: claimedEmpid(token) });
+      }
+      throw new HttpError(401, 'Giriş tələb olunur');
+    }
+    const { empid, e } = payload;
     const r = await pool.query('SELECT * FROM portal.users WHERE empid = $1 AND active', [empid]);
     if (!r.rows[0] || (r.rows[0].session_epoch || 0) !== (e || 0)) throw new HttpError(401, 'Giriş tələb olunur');
+    if (r.rows[0].blocked_at) throw new HttpError(403, BLOCKED_MSG);
     req.user = publicUser(r.rows[0]);
     next();
   } catch (e) {
@@ -118,13 +141,16 @@ export async function requireAuth(req, _res, next) {
   }
 }
 
-export const needCap = (...caps) => (req, _res, next) => {
+// İstifadə ekranı bu marşrutlara yetkisiz istifadəçini göndərmir. Cəhd olursa, əllə sorğu deməkdir: blok.
+export const needCap = (...caps) => async (req, _res, next) => {
   if (caps.some((c) => req.user.caps.includes(c))) return next();
-  next(new HttpError(403, 'Bu əməliyyat üçün yetkiniz yoxdur'));
+  next(await violation(req, 'admin_route', `Yetkisi olmayan əməliyyata cəhd: ${req.method} ${String(req.originalUrl).split('?')[0]}`));
 };
 
-export const needAdmin = (req, _res, next) =>
-  req.user.role === 'admin' ? next() : next(new HttpError(403, 'Yalnız admin'));
+export const needAdmin = async (req, _res, next) =>
+  req.user.role === 'admin'
+    ? next()
+    : next(await violation(req, 'admin_route', `Yalnız admin üçün əməliyyata cəhd: ${req.method} ${String(req.originalUrl).split('?')[0]}`));
 
 function safeDetail(d) {
   const j = JSON.stringify(d ?? {});

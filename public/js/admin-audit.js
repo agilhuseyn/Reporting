@@ -20,7 +20,7 @@ export async function adminAudit(root) {
       body,
       rows
         .filter((r) => !f || `${r.empid} ${r.name} ${r.action} ${JSON.stringify(r.detail)}`.toLowerCase().includes(f))
-        .map((r) => h('tr', {},
+        .map((r) => h('tr', { class: String(r.action).startsWith('security.') ? 'secrow' : '' },
           h('td', {}, new Date(r.at).toLocaleString()),
           h('td', {}, `${r.name || ''} ${r.empid || ''}`),
           h('td', { class: 'mono' }, r.action),

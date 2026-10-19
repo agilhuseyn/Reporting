@@ -1,6 +1,7 @@
 // Təhlükəsizlik qatları: başlıqlar, CSRF, sürət limiti, paralel icra limiti, "yalnız tətbiq" qapısı.
 import zlib from 'node:zlib';
 import { HttpError } from './errors.js';
+import { anon } from './guard.js';
 
 const PROD = process.env.NODE_ENV === 'production';
 
@@ -39,12 +40,16 @@ export function sameOrigin(req, _res, next) {
     } catch {
       return next(new HttpError(403, 'Qadağan olunmuş mənbə'));
     }
-    if (oh !== host) return next(new HttpError(403, 'Qadağan olunmuş mənbə'));
+    if (oh !== host) { anon(req, 'csrf', 'Başqa saytdan dəyişdirici sorğu', { origin: String(origin).slice(0, 200) }); return next(new HttpError(403, 'Qadağan olunmuş mənbə')); }
   } else if (origin === 'null') {
+    anon(req, 'csrf', 'Origin=null ilə dəyişdirici sorğu');
     return next(new HttpError(403, 'Qadağan olunmuş mənbə'));
   }
   const site = req.headers['sec-fetch-site'];
-  if (site && !['same-origin', 'none'].includes(site)) return next(new HttpError(403, 'Qadağan olunmuş mənbə'));
+  if (site && !['same-origin', 'none'].includes(site)) {
+    anon(req, 'csrf', 'Başqa saytdan dəyişdirici sorğu', { site });
+    return next(new HttpError(403, 'Qadağan olunmuş mənbə'));
+  }
   next();
 }
 

@@ -170,3 +170,8 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16
 .overlay { position: fixed; inset: 0; background: rgba(24, 32, 43, .5); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 50; }
 .modal { background: var(--panel); border-radius: 10px; width: min(1100px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
 .modal-body { overflow: auto; min-height: 0; }
+
+/* Avtomatik blok və təhlükəsizlik jurnalı */
+.blocked-tag { display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: var(--err-bg); color: var(--err); font-size: 11px; font-weight: 600; }
+.tbl tr.secrow td { background: var(--err-bg); color: var(--err); }
+.tbl tbody tr.secrow:hover td { background: #fbdcd8; }

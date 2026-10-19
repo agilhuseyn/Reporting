@@ -1,6 +1,6 @@
 import { pool } from './db.js';
 import { effective, visibleColumns, resolveToken } from './perms.js';
-import { HttpError } from './errors.js';
+import { HttpError, GuardError, markViolation } from './errors.js';
 import { getSqlSource, loadConn } from './connections.js';
 import { guardMssql, canWrap, colType, normVal, buildWrapped, applyJs, dateInput } from './mssql-dialect.js';
 
@@ -22,10 +22,10 @@ export function guardSql(sql) {
     .trim()
     .replace(/;+\s*$/, '');
   if (!s) throw new HttpError(400, 'SQL boşdur');
-  if (s.includes(';')) throw new HttpError(400, 'Yalnız bir sorğu yazıla bilər');
-  if (!/^(select|with)\b/i.test(s)) throw new HttpError(400, 'Sorğu SELECT və ya WITH ilə başlamalıdır');
+  if (s.includes(';')) throw new GuardError(400, 'Yalnız bir sorğu yazıla bilər');
+  if (!/^(select|with)\b/i.test(s)) throw new GuardError(400, 'Sorğu SELECT və ya WITH ilə başlamalıdır');
   const m = FORBIDDEN.exec(s);
-  if (m) throw new HttpError(400, `Qadağan söz: ${m[0]}`);
+  if (m) throw new GuardError(400, `Qadağan söz: ${m[0]}`);
   return s;
 }
 
@@ -250,13 +250,17 @@ async function runDetailInner(empid, report, params, key) {
     await pool.query('SELECT * FROM portal.report_columns WHERE report_id = $1 ORDER BY pos, code', [report.id])
   ).rows;
   const keyCol = visibleColumns(perm, rcols).find((c) => c.code === drill.column);
-  if (!keyCol || keyCol.masked) throw new HttpError(403, 'Bu sütun üçün detal açıq deyil');
+  if (!keyCol || keyCol.masked) {
+    throw markViolation(new HttpError(403, 'Bu sütun üçün detal açıq deyil'), 'detail_denied', 'Detal açıq olmayan sütun üçün detal sorğusu', keyStr);
+  }
 
   // Basılan dəyər əsas hesabatda bu istifadəçiyə görünən sətirdən gəlirmi?
   const seen = await runForUserInner(empid, report, params, {
     maxRows: 1, extraRules: [{ column: drill.column, op: 'eq', value: keyStr, subject: { type: 'user', id: empid } }],
   });
-  if (!seen.rows.length) throw new HttpError(404, 'Tapılmadı');
+  if (!seen.rows.length) {
+    throw markViolation(new HttpError(404, 'Tapılmadı'), 'detail_key', 'Detal üçün özünə görünməyən dəyər göndərdi', keyStr);
+  }
 
   const dcols = (drill.columns || []).map((c) => ({ ...c, masked: false }));
   const vis = dcols

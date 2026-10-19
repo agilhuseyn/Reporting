@@ -1,4 +1,4 @@
-import { HttpError } from './errors.js';
+import { HttpError, GuardError } from './errors.js';
 
 // MSSQL üçün təmiz (sürücüsüz) köməkçilər: qoruma, sorğu qurma, JS tərəfdə süzgəc.
 
@@ -21,14 +21,14 @@ function clean(sql) {
 export function guardMssql(sql, kind) {
   const s = clean(sql);
   if (!s) throw new HttpError(400, 'SQL boşdur');
-  if (s.includes(';')) throw new HttpError(400, 'Yalnız bir sorğu yazıla bilər');
+  if (s.includes(';')) throw new GuardError(400, 'Yalnız bir sorğu yazıla bilər');
   if (kind === 'procedure') {
-    if (!PROC_RE.test(s)) throw new HttpError(400, 'Prosedur formatı: EXEC sxem.ad @a = @a, @b = @b');
+    if (!PROC_RE.test(s)) throw new GuardError(400, 'Prosedur formatı: EXEC sxem.ad @a = @a, @b = @b');
     return s;
   }
-  if (!/^(select|with)\b/i.test(s)) throw new HttpError(400, 'Sorğu SELECT və ya WITH ilə başlamalıdır');
+  if (!/^(select|with)\b/i.test(s)) throw new GuardError(400, 'Sorğu SELECT və ya WITH ilə başlamalıdır');
   const m = FORBIDDEN.exec(s);
-  if (m) throw new HttpError(400, `Qadağan söz: ${m[0]}`);
+  if (m) throw new GuardError(400, `Qadağan söz: ${m[0]}`);
   return s;
 }
 

@@ -83,8 +83,25 @@ export async function adminUsers(root, me) {
           h('td', { class: 'mono' }, u.empid), h('td', {}, u.name), h('td', {}, posName(u.position_id)),
           h('td', {}, h('span', { class: `tag ${u.role}` }, t(`role.${u.role}`))),
           h('td', { class: 'small' }, u.role === 'support' ? u.caps.map((c) => t(`cap.${c}`)).join(', ') : u.role === 'admin' ? t('allCaps') : ''),
-          h('td', {}, u.active ? t('active') : t('inactive')),
-          h('td', {}, h('button', { class: 'btn sm', disabled: !isAdmin && u.role !== 'user', onclick: () => { edit = { ...u, password: '' }; draw(); } }, t('edit')))))))));
+          h('td', {}, u.active ? t('active') : t('inactive'),
+            u.blocked_at ? h('div', { class: 'blocked-tag', title: u.blocked_reason || '' }, `${t('blocked')} · ${new Date(u.blocked_at).toLocaleString()}`) : null,
+            u.blocked_at && u.blocked_reason ? h('div', { class: 'small muted' }, u.blocked_reason) : null),
+          h('td', { class: 'row gap6' },
+            u.blocked_at && isAdmin ? h('button', { class: 'btn sm primary', onclick: () => unblock(u) }, t('unblock')) : null,
+            h('button', { class: 'btn sm', disabled: !isAdmin && u.role !== 'user', onclick: () => { edit = { ...u, password: '' }; draw(); } }, t('edit')))))))));
+  }
+
+  // Avtomatik blokdan yalnız admin çıxarır
+  async function unblock(u) {
+    if (!confirm(`${t('unblockConfirm')}: ${u.name} (${u.empid})`)) return;
+    try {
+      await api(`/api/admin/users/${encodeURIComponent(u.id)}/unblock`, { method: 'POST', body: {} });
+      toast(t('unblocked'));
+      await load();
+      draw();
+    } catch (e) {
+      toast(e.message, 'err');
+    }
   }
 
   function posTab() {

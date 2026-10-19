@@ -100,6 +100,14 @@ const U = {};
   const sj = await call('GET', '/api/admin/subjects', { cookie: sessions['100001'] });
   for (const u of sj.json?.users || []) U[u.empid] = u.id;
 }
+// Qanunsuz cəhd istifadəçini bloklayır. Hər cəhd üçün təmiz sessiya: admin blokdan çıxarır, istifadəçi yenidən girir.
+async function fresh(empid) {
+  await call('POST', `/api/admin/users/${U[empid]}/unblock`, { cookie: sessions['100001'], body: {} });
+  const l = await login(empid);
+  sessions[empid] = l.cookie;
+  return l.cookie;
+}
+const auditRows = async () => (await call('GET', '/api/admin/audit?limit=1000', { cookie: sessions['100001'] })).json || [];
 {
   const bad = await call('POST', '/api/auth/login', { body: { empid: '100001', password: 'yanlis-parol' } });
   const none = await call('POST', '/api/auth/login', { body: { empid: 'yoxdur999', password: 'yanlis-parol' } });
@@ -155,22 +163,24 @@ sec('Yetki keçidi (admin marşrutları)');
     ['POST', '/api/admin/positions', { name: 'hack' }], ['DELETE', `/api/admin/positions/${U['100482']}`], ['POST', '/api/admin/groups', { name: 'hack' }],
   ];
   for (const [m, p, b] of adminRoutes) {
-    const r = await call(m, p, { cookie: sessions['100482'], body: b });
+    const r = await call(m, p, { cookie: await fresh('100482'), body: b });
     ok(`Adi istifadəçi → ${m} ${p.split('?')[0]} qadağan`, r.status === 403, String(r.status));
   }
+  await fresh('100482');
   // dəstək (support) yalnız öz səlahiyyəti daxilində
   for (const [m, p, b] of [['GET', '/api/admin/connections'], ['PUT', '/api/admin/connections/sql', {}], ['POST', '/api/admin/connections/ldap/test', {}], ['DELETE', '/api/admin/connections/ldap']]) {
-    const r = await call(m, p, { cookie: sessions['100002'], body: b });
+    const r = await call(m, p, { cookie: await fresh('100002'), body: b });
     ok(`Dəstək → ${m} ${p} (yalnız admin) qadağan`, r.status === 403, String(r.status));
   }
-  const r1 = await call('GET', '/api/admin/users', { cookie: sessions['100002'] });
+  const r1 = await call('GET', '/api/admin/users', { cookie: await fresh('100002') });
   ok('Dəstək (users yetkisi yoxdur) → istifadəçi siyahısı qadağan', r1.status === 403, String(r1.status));
-  const r2 = await call('PUT', `/api/admin/users/${U['100001']}`, { cookie: sessions['100003'], body: { role: 'user', password: 'yenisifre123' } });
+  const r2 = await call('PUT', `/api/admin/users/${U['100001']}`, { cookie: await fresh('100003'), body: { role: 'user', password: 'yenisifre123' } });
   ok('Dəstək admin hesabını dəyişə bilmir', r2.status === 403, String(r2.status));
-  const r3 = await call('GET', '/api/admin/audit', { cookie: sessions['100003'] });
+  const r3 = await call('GET', '/api/admin/audit', { cookie: await fresh('100003') });
   ok('Dəstək (audit yetkisi yoxdur) → jurnal qadağan', r3.status === 403, String(r3.status));
-  const r4 = await call('POST', '/api/admin/reports/test', { cookie: sessions['100003'], body: { sql: 'select 1' } });
+  const r4 = await call('POST', '/api/admin/reports/test', { cookie: await fresh('100003'), body: { sql: 'select 1' } });
   ok('Dəstək (reports yetkisi yoxdur) → SQL test qadağan', r4.status === 403, String(r4.status));
+  for (const e of ['100002', '100003', '100482']) await fresh(e);
 }
 
 // ---------- 8. Məlumat sızması / hesabat yetkisi ----------
@@ -204,23 +214,25 @@ sec('Məlumat sızması və yetki (sütun, dəyər qaydası)');
   const allReports = (await call('GET', '/api/admin/reports', { cookie: sessions['100001'] })).json || [];
   ok('Admin hesabat siyahısı alındı', allReports.length > 0);
   for (const { id: rid } of allReports) {
-    const m = await call('GET', `/api/reports/${rid}/meta`, { cookie: sessions['100501'] });
-    const r = await call('POST', `/api/reports/${rid}/run`, { cookie: sessions['100501'], body: { params: { tarix_bas: '2025-01-01', tarix_son: today } } });
-    const o = await call('GET', `/api/reports/${rid}/options/filial`, { cookie: sessions['100501'] });
+    const m = await call('GET', `/api/reports/${rid}/meta`, { cookie: await fresh('100501') });
+    const r = await call('POST', `/api/reports/${rid}/run`, { cookie: await fresh('100501'), body: { params: { tarix_bas: '2025-01-01', tarix_son: today } } });
+    const o = await call('GET', `/api/reports/${rid}/options/filial`, { cookie: await fresh('100501') });
     if (!(m.status === 403 || m.status === 404) || !(r.status === 403 || r.status === 404) || !(o.status === 403 || o.status === 404)) {
       ok(`Yetkisiz istifadəçi hesabat ${rid}-ə çata bilmir`, false, `${m.status}/${r.status}/${o.status}`);
     }
   }
   ok('Yetkisiz istifadəçi heç bir hesabata çata bilmir', !fails.some((f) => f.startsWith('Yetkisiz istifadəçi hesabat')));
+  await fresh('100501');
   // parametrlə qaydanı aşmaq cəhdi
   const bypass = await call('POST', `/api/reports/${id}/run`, { cookie: sessions['100482'], body: { params: { tarix_bas: '2025-01-01', tarix_son: today, filial: 'SM' } } });
   const brows = bypass.json?.rows || [];
   ok('Filial parametri ilə yetki qaydası aşılmır (SM seçilsə də yalnız Bakı)', bypass.status === 200 && brows.every((r) => r[fi] === 'Bakı'));
   // id fuzz
   for (const bad of ['1', '2', '12', 'abc', '1 OR 1=1', '-1', '99999999999999', '1;DROP TABLE x', '%00', '1.5', '', '0x1']) {
-    const r = await call('GET', `/api/reports/${encodeURIComponent(bad)}/meta`, { cookie: sessions['100482'] });
+    const r = await call('GET', `/api/reports/${encodeURIComponent(bad)}/meta`, { cookie: await fresh('100482') });
     ok(`Hesabat id fuzz «${bad}» → 4xx (500 yox)`, r.status >= 400 && r.status < 500, String(r.status));
   }
+  await fresh('100482');
 }
 
 // ---------- 9. SQL injection (istifadəçi parametrləri) ----------
@@ -234,13 +246,14 @@ sec('SQL injection (parametrlər)');
     '\u0000', 'a'.repeat(2000), "'||(select current_user)||'", '${7*7}', '{{7*7}}', '../../etc/passwd'];
   for (const p of payloads) {
     for (const key of ['filial', 'tarix_bas', 'tarix_son']) {
-      const r = await call('POST', `/api/reports/${id}/run`, { cookie: sessions['100317'], body: { params: { tarix_bas: '2025-01-01', tarix_son: today, [key]: p } } });
+      const r = await call('POST', `/api/reports/${id}/run`, { cookie: await fresh('100317'), body: { params: { tarix_bas: '2025-01-01', tarix_son: today, [key]: p } } });
       if (r.status === 500 || /relation|syntax error|pg_|demo\.|portal\.|stack|ECONN/i.test(r.text)) {
         ok(`Injection yükü zərərsiz (${key}=${p.slice(0, 20)})`, false, `${r.status} ${r.text.slice(0, 120)}`);
       }
     }
   }
   const objs = [{ a: 1 }, [1, 2], true, 12345, null, { $gt: '' }];
+  await fresh('100317');
   for (const v of objs) {
     const r = await call('POST', `/api/reports/${id}/run`, { cookie: sessions['100317'], body: { params: { tarix_bas: '2025-01-01', tarix_son: today, filial: v } } });
     if (r.status === 500) ok(`Obyekt/massiv parametr 500 vermir (${JSON.stringify(v)})`, false, r.text.slice(0, 100));
@@ -347,6 +360,97 @@ sec('UUID (təxmin olunmayan ID-lər)');
   ok('Böyük hərfli UUID səhv 500 vermir', up.status < 500, String(up.status));
   const inj = await call('GET', `/api/admin/reports/${encodeURIComponent(reports[0].id + "' OR '1'='1")}`, { cookie: A });
   ok('UUID-yə əlavə SQL → 404', inj.status === 404, String(inj.status));
+}
+
+// ---------- 11c. Avtomatik blok ----------
+sec('Avtomatik blok (qanunsuz cəhd)');
+{
+  const A = sessions['100001'];
+  const today = new Date().toISOString().slice(0, 10);
+  // 1) Adi istifadəçi admin marşrutuna əllə sorğu göndərir
+  let c = await fresh('100236');
+  const r1 = await call('GET', '/api/admin/users', { cookie: c });
+  ok('Yetkisiz admin marşrutu → 403 və blok mesajı', r1.status === 403 && /bloklandı/.test(r1.json?.error || ''), `${r1.status} ${r1.json?.error}`);
+  const me = await call('GET', '/api/me', { cookie: c });
+  ok('Bloklanandan sonra köhnə sessiya bağlanır (401)', me.status === 401, String(me.status));
+  const lw = await call('POST', '/api/auth/login', { body: { empid: '100236', password: 'yanlis-parol' } });
+  ok('Yanlış parolla blok bilinmir (ümumi 401)', lw.status === 401, String(lw.status));
+  const lb = await call('POST', '/api/auth/login', { body: { empid: '100236', password: PW } });
+  ok('Düzgün parolla da giriş bağlıdır (403 bloklanıb)', lb.status === 403 && /bloklandı/.test(lb.json?.error || ''), `${lb.status} ${lb.json?.error}`);
+  let rows = await auditRows();
+  const ev = rows.find((r) => r.action === 'security.block' && r.empid === '100236');
+  ok('Jurnalda security.block yazısı var', !!ev);
+  ok('Jurnal nə etmək istədiyini göstərir (növ, yol, IP)', ev?.detail?.kind === 'admin_route' && /\/api\/admin\/users/.test(ev.detail.path || '') && !!ev.detail.ip && !!ev.detail.what, JSON.stringify(ev?.detail));
+  const ul = (await call('GET', '/api/admin/users', { cookie: A })).json || [];
+  const row = ul.find((u) => u.empid === '100236');
+  ok('Admin siyahısında bloklu və səbəb görünür', !!row?.blocked_at && !!row?.blocked_reason, JSON.stringify(row));
+  // 2) Dəstək hesabı blokdan çıxara bilmir (yalnız admin)
+  const sup = await fresh('100002');
+  const un = await call('POST', `/api/admin/users/${U['100236']}/unblock`, { cookie: sup, body: {} });
+  ok('Dəstək blokdan çıxara bilmir', un.status === 403, String(un.status));
+  const still = await call('POST', '/api/auth/login', { body: { empid: '100236', password: PW } });
+  ok('Bloklu istifadəçi hələ də bloklu qalır', still.status === 403, String(still.status));
+  // 3) Admin blokdan çıxarır
+  const ub = await call('POST', `/api/admin/users/${U['100236']}/unblock`, { cookie: A, body: {} });
+  ok('Admin blokdan çıxarır', ub.status === 200, String(ub.status));
+  const ub2 = await call('POST', `/api/admin/users/${U['100236']}/unblock`, { cookie: A, body: {} });
+  ok('Bloklu olmayanı çıxarmaq 400', ub2.status === 400, String(ub2.status));
+  const back = await login('100236');
+  ok('Blokdan çıxandan sonra giriş işləyir', back.r.status === 200, String(back.r.status));
+  ok('Blokdan çıxarma jurnala yazılır', (await auditRows()).some((r) => r.action === 'security.unblock' && r.detail?.empid === '100236'));
+
+  // 4) Dəstək hesabı qadağan SQL yazır
+  c = await fresh('100002');
+  const sq = await call('POST', '/api/admin/reports/test', { cookie: c, body: { sql: 'delete from demo.satis' } });
+  ok('Qadağan SQL (delete) yazan dəstək bloklanır', sq.status === 403 && /bloklandı/.test(sq.json?.error || ''), `${sq.status} ${sq.json?.error}`);
+  rows = await auditRows();
+  const sev = rows.find((r) => r.action === 'security.block' && r.empid === '100002');
+  ok('Jurnal yazılmış SQL-i göstərir', sev?.detail?.kind === 'dangerous_sql' && /delete from demo\.satis/.test(sev.detail.sample || ''), JSON.stringify(sev?.detail));
+  await fresh('100002');
+
+  // 5) Admin bloklanmır, amma jurnala yazılır və əsl səbəbi görür
+  const ad = await call('POST', '/api/admin/reports/test', { cookie: A, body: { sql: 'delete from demo.satis' } });
+  ok('Admin qadağan SQL yazanda bloklanmır, əsl səbəb görür', ad.status === 400 && /SELECT|Qadağan/.test(ad.json?.error || ''), `${ad.status} ${ad.json?.error}`);
+  const adMe = await call('GET', '/api/me', { cookie: A });
+  ok('Admin sessiyası davam edir', adMe.status === 200, String(adMe.status));
+  ok('Admin pozuntusu jurnalda var (security.violation)', (await auditRows()).some((r) => r.action === 'security.violation' && r.empid === '100001'));
+
+  // 6) Parametrdə injection → blok; adi mətn → blok yox
+  c = await fresh('100317');
+  const lst = (await call('GET', '/api/reports', { cookie: c })).json || [];
+  const rid = lst[0]?.id;
+  for (const ok_ of ["O'Brien", 'Əliyev; Həsən', 'a-b_c 12', '50% endirim', 'Bakı (mərkəz)']) {
+    const r = await call('POST', `/api/reports/${rid}/run`, { cookie: c, body: { params: { tarix_bas: '2025-01-01', tarix_son: today, filial: ok_ } } });
+    ok(`Adi mətn bloklamır: «${ok_}»`, r.status !== 403, String(r.status));
+  }
+  const m2 = await call('GET', '/api/me', { cookie: c });
+  ok('Adi mətndən sonra istifadəçi bloklanmayıb', m2.status === 200, String(m2.status));
+  const inj = await call('POST', `/api/reports/${rid}/run`, { cookie: c, body: { params: { tarix_bas: '2025-01-01', tarix_son: today, filial: "x' UNION SELECT 1 --" } } });
+  ok('Parametrdə UNION SELECT → blok', inj.status === 403 && /bloklandı/.test(inj.json?.error || ''), `${inj.status} ${inj.json?.error}`);
+  const injRow = (await auditRows()).find((r) => r.action === 'security.block' && r.empid === '100317');
+  ok('Jurnal injection dəyərini göstərir', injRow?.detail?.kind === 'injection_param' && /UNION/i.test(injRow.detail.sample || ''), JSON.stringify(injRow?.detail));
+  c = await fresh('100317');
+
+  // 7) Yanlış formatlı ID → blok; düzgün formatlı, amma mövcud olmayan UUID → yalnız 404
+  const ghost = await call('GET', '/api/reports/00000000-0000-4000-8000-000000000000/meta', { cookie: c });
+  ok('Mövcud olmayan (düzgün formatlı) UUID → 404, blok yox', ghost.status === 404, String(ghost.status));
+  ok('...və istifadəçi bloklanmayıb', (await call('GET', '/api/me', { cookie: c })).status === 200);
+  const bad = await call('GET', '/api/reports/123/meta', { cookie: c });
+  ok('Yanlış formatlı ID → blok (403)', bad.status === 403, String(bad.status));
+  const badAudit = (await auditRows()).find((r) => r.action === 'security.block' && r.empid === '100317');
+  ok('Jurnalda bad_id və göndərilən dəyər', badAudit?.detail?.kind === 'bad_id' && badAudit.detail.sample === '123', JSON.stringify(badAudit?.detail));
+  await fresh('100317');
+
+  // 8) Saxta token və CSRF: kimin adından olduğu bilinmir, heç kəs bloklanmır, yalnız jurnal
+  const xf = { 'X-Forwarded-For': `203.0.113.${Math.floor(Math.random() * 200) + 1}` }; // hər test üçün ayrı IP: jurnal sürət limitinə düşməsin
+  const bt = await call('GET', '/api/me', { cookie: 'token=abc.def.ghi', headers: xf });
+  ok('Saxta token → 401', bt.status === 401, String(bt.status));
+  const cs = await call('POST', '/api/auth/login', { headers: { Origin: 'https://evil.example', 'X-Forwarded-For': `198.51.100.${Math.floor(Math.random() * 200) + 1}` }, body: { empid: 'x', password: 'y' } });
+  ok('Başqa saytdan sorğu → 403', cs.status === 403, String(cs.status));
+  rows = await auditRows();
+  ok('Saxta token jurnalda (security.anon, bad_token)', rows.some((r) => r.action === 'security.anon' && r.detail?.kind === 'bad_token'));
+  ok('CSRF cəhdi jurnalda (security.anon, csrf)', rows.some((r) => r.action === 'security.anon' && r.detail?.kind === 'csrf'));
+  for (const e of ['100236', '100002', '100317']) await fresh(e);
 }
 
 // ---------- 12. Fayl və yol sızması ----------
