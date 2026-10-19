@@ -6,6 +6,7 @@ import { adminReports } from './admin-reports.js';
 import { adminPerms } from './admin-perms.js';
 import { adminUsers } from './admin-users.js';
 import { adminAudit } from './admin-audit.js';
+import { adminConnections } from './admin-connections.js';
 
 const root = document.getElementById('app');
 let me = null;
@@ -15,6 +16,7 @@ const ADMIN_PAGES = [
   { key: 'permissions', cap: ['permissions'], run: adminPerms },
   { key: 'users', cap: ['users'], run: adminUsers },
   { key: 'audit', cap: ['audit'], run: adminAudit },
+  { key: 'connections', admin: true, run: adminConnections },
 ];
 
 function langSwitch() {
@@ -47,7 +49,7 @@ function loginView() {
 }
 
 function allowedAdmin() {
-  return ADMIN_PAGES.filter((p) => p.cap.some((c) => me.caps.includes(c)));
+  return ADMIN_PAGES.filter((p) => (p.admin ? me.role === 'admin' : p.cap.some((c) => me.caps.includes(c))));
 }
 
 async function render() {

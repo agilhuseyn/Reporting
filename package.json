@@ -16,6 +16,8 @@
     "cookie-parser": "^1.4.6",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
+    "ldapts": "^7.0.0",
+    "mssql": "^11.0.0",
     "pg": "^8.12.0"
   }
 }

@@ -18,6 +18,7 @@ Hesabat SQL-lərini saxlayır, sütun və dəyər səviyyəsində yetki verir, n
 | `JWT_SECRET` | Sessiya açarı |
 | `SEED_PASSWORD` | Nümunə istifadəçilərin parolu |
 | `REPORT_RO_PASSWORD` | Yalnız oxuma rolunun (`report_ro`) parolu |
+| `CONN_SECRET` | (ixtiyari) bağlantı parollarının şifrə açarı |
 
 `report_ro` yaranmasa, hesabatlar işləmir (təhlükəsizlik üçün). Əl ilə yaratmaq:
 ```sql
@@ -39,9 +40,21 @@ ALTER ROLE report_ro SET search_path = demo;
 - Maska: serverdən həqiqi dəyər çıxmır, ekranda blur görünür.
 - Dəyər qaydaları (məs. `filial_name IN [Bakı]`) `AND` ilə qoşulur.
 
+## Bağlantılar tabı (yalnız admin)
+**Admin → Bağlantılar** ekranında:
+- **SQL bazası**: MSSQL və ya PostgreSQL. Server, port, baza, istifadəçi, parol yazıb **Test et** basın. Test yazma/admin hüququ olan hesabı xəbərdar edir. Test keçməsə, aktiv etmək olmur. Aktiv edilməsə, daxili test bazası işləyir.
+- **LDAP**: ünvan, Base DN, servis hesabı, axtarış filtri (`{login}` yeri). EMPID atributu boşdursa, daxil edilən ad EMPID sayılır. Test üçün istifadəçi adı və parolu yaza bilərsiniz.
+- Parollar bazada AES-256-GCM ilə şifrələnir. Açar: `CONN_SECRET` (yoxdursa `JWT_SECRET`). Açarı dəyişsəniz, parolları yenidən yazın.
+- LDAP aktivdirsə, istifadəçilər yenə də portalda (EMPID ilə) qeydiyyatda olmalıdır. LDAP yalnız parolu yoxlayır. Admin hesabı LDAP düşəndə lokal parolla girə bilir.
+
+### MSSQL qaydaları
+- Parametr `@ad` olduğu kimi qalır. Tarix `YYYYMMDD` kimi göndərilir.
+- MSSQL-də oxuma tranzaksiyası yoxdur. Bağlantı hesabına yalnız `db_datareader` verin.
+- `SELECT` sorğuları alt sorğuya sarınır (`TOP`). `WITH`, `ORDER BY` və prosedur nəticəsi serverdə süzülür.
+- Prosedur formatı: `EXEC sxem.ad @bas = @bas, @son = @son`. Hesabatın növü **procedure** olmalıdır.
+- Prosedurun içini portal yoxlaya bilmir. Onun yazmamasını DB hüququ təmin etməlidir.
+
 ## Sonra
-- MSSQL: `mssql` drayveri, `runner.js`-də `LIMIT` → `TOP`, prosedur üçün `EXEC`.
-- LDAP: `AUTH_PROVIDER=ldap`, `server/auth.js`-də yer hazırdır.
 - SAP istifadəçi sinxronu: prosedurdan `portal.users` doldurmaq.
 
 ## Lokal

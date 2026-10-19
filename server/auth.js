@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
-import { HttpError } from './runner.js';
+import { HttpError } from './errors.js';
+import { loadConn } from './connections.js';
+import { ldapFindUser, ldapVerify } from './ldap.js';
 
 let secret = process.env.JWT_SECRET;
 if (!secret) {
@@ -12,13 +14,27 @@ if (!secret) {
 
 export const ALL_CAPS = ['reports', 'permissions', 'users', 'audit'];
 
-// Giriş provayderi. İndi: lokal parol. Sonra: LDAP (ad + kod) burada əvəz olunacaq.
-async function verifyCredentials(empid, password) {
-  if (process.env.AUTH_PROVIDER === 'ldap') {
-    throw new HttpError(501, 'LDAP provayderi hələ qoşulmayıb');
-  }
+// Giriş provayderi. LDAP aktivdirsə: LDAP ad + parol. Deyilsə: lokal parol.
+// İstifadəçilər həmişə sistemdən (portal.users) gəlir, LDAP yalnız parolu yoxlayır.
+// Admin hesabı LDAP düşəndə girə bilsin deyə lokal parolla da girə bilir.
+async function localUser(empid) {
   const r = await pool.query('SELECT * FROM portal.users WHERE empid = $1 AND active', [empid]);
-  const u = r.rows[0];
+  return r.rows[0] || null;
+}
+
+async function verifyCredentials(login, password) {
+  const ldap = await loadConn('ldap').catch(() => null);
+  if (ldap?.enabled) {
+    const local = await localUser(login);
+    if (local?.role === 'admin' && local.password_hash && (await bcrypt.compare(password, local.password_hash))) return local;
+    const found = await ldapFindUser(ldap.config, ldap.password, login);
+    if (!found?.empid) return null;
+    if (!(await ldapVerify(ldap.config, found.dn, password))) return null;
+    const u = await localUser(found.empid);
+    if (!u) throw new HttpError(403, 'Bu istifadəçi portalda qeydiyyatda deyil');
+    return u;
+  }
+  const u = await localUser(login);
   if (!u || !u.password_hash) return null;
   return (await bcrypt.compare(password, u.password_hash)) ? u : null;
 }
@@ -39,7 +55,7 @@ export async function login(req, res) {
   const u = await verifyCredentials(empid, password);
   if (!u) {
     fails.get(key).push(Date.now());
-    throw new HttpError(401, 'EMPID və ya parol yanlışdır');
+    throw new HttpError(401, 'Ad və ya parol yanlışdır');
   }
   const token = jwt.sign({ empid: u.empid }, secret, { expiresIn: '8h' });
   res.cookie('token', token, {

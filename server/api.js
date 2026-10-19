@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
 import { login, logout, requireAuth, needCap, needAdmin, audit, publicUser, ALL_CAPS } from './auth.js';
 import { reportsFor, effective, visibleColumns } from './perms.js';
+import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } from './connections.js';
+import { testLdap } from './ldap.js';
 import { runForUser, runTest, runOptions, detectParams, guardSql, HttpError } from './runner.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -117,7 +119,7 @@ admin.post('/reports/detect', needCap('reports'), wrap(async (req, res) => {
 }));
 
 admin.post('/reports/test', needCap('reports'), wrap(async (req, res) => {
-  const out = await runTest(req.body?.sql, req.body?.params || {}, req.body?.types || {});
+  const out = await runTest(req.body?.sql, req.body?.params || {}, req.body?.types || {}, req.body?.kind);
   await audit(req.user.empid, 'test', { ms: out.ms, rows: out.rows.length });
   res.json(out);
 }));
@@ -402,6 +404,54 @@ admin.delete('/groups/:id', needCap('users'), wrap(async (req, res) => {
   await pool.query(`DELETE FROM portal.perm_report WHERE subject_type='group' AND subject_id=$1`, [req.params.id]);
   await pool.query(`DELETE FROM portal.perm_column WHERE subject_type='group' AND subject_id=$1`, [req.params.id]);
   await pool.query(`DELETE FROM portal.perm_value WHERE subject_type='group' AND subject_id=$1`, [req.params.id]);
+  res.json({ ok: true });
+}));
+
+// ---------- Bağlantılar (yalnız admin) ----------
+const connKind = (req) => {
+  if (!['sql', 'ldap'].includes(req.params.kind)) throw new HttpError(404, 'Naməlum bağlantı');
+  return req.params.kind;
+};
+
+async function testConn(kind, body) {
+  const config = cleanConfig(kind, body?.config);
+  const stored = await loadConn(kind).catch(() => null);
+  const password = body?.password || stored?.password || '';
+  if (kind === 'sql') return { config, password, result: await testSql(config, password) };
+  return { config, password, result: await testLdap(config, password, String(body?.testLogin || '').trim(), String(body?.testPassword || '')) };
+}
+
+admin.get('/connections', needAdmin, wrap(async (_req, res) => res.json(await publicConns())));
+
+admin.post('/connections/:kind/test', needAdmin, wrap(async (req, res) => {
+  const kind = connKind(req);
+  let out;
+  try {
+    out = (await testConn(kind, req.body)).result;
+  } catch (e) {
+    if (e instanceof HttpError && e.status >= 500) throw e;
+    out = { ok: false, error: e.message, steps: kind === 'ldap' ? [{ step: 'connect', ok: false, error: e.message }] : undefined };
+  }
+  await audit(req.user.empid, 'conn_test', { kind, ok: out.ok });
+  res.json(out);
+}));
+
+// Aktiv etməzdən əvvəl server özü yoxlayır: səhv məlumat girişi və ya hesabatları bağlamasın.
+admin.put('/connections/:kind', needAdmin, wrap(async (req, res) => {
+  const kind = connKind(req);
+  const enabled = !!req.body?.enabled;
+  const { config, password, result } = await testConn(kind, req.body);
+  if (enabled && !result.ok) throw new HttpError(400, 'Test uğursuzdur, aktiv etmək olmaz. Əvvəlcə "Test" edin.');
+  await saveConn(kind, config, req.body?.password || '', enabled, req.user.empid);
+  await audit(req.user.empid, 'conn_save', { kind, enabled, host: config.host || config.url });
+  void password;
+  res.json({ ok: true, warnings: result.warnings || [] });
+}));
+
+admin.delete('/connections/:kind', needAdmin, wrap(async (req, res) => {
+  const kind = connKind(req);
+  await deleteConn(kind);
+  await audit(req.user.empid, 'conn_delete', { kind });
   res.json({ ok: true });
 }));
 
