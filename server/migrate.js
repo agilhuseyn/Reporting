@@ -56,6 +56,10 @@ const DDL = [
      id bigserial PRIMARY KEY, at timestamptz DEFAULT now(), empid text, action text, detail jsonb)`,
 ];
 
+const PATCH_DDL = [
+  `ALTER TABLE portal.users ADD COLUMN IF NOT EXISTS session_epoch int NOT NULL DEFAULT 0`,
+];
+
 const DEMO_DDL = [
   `CREATE SCHEMA IF NOT EXISTS demo`,
   `CREATE TABLE IF NOT EXISTS demo.filial (kod text PRIMARY KEY, ad text NOT NULL)`,
@@ -206,8 +210,17 @@ async function seedPortal(client) {
   const { rows } = await client.query('SELECT count(*)::int AS n FROM portal.users');
   if (rows[0].n > 0) return;
   console.log('Portal nümunə məlumatları yaradılır...');
-  const seedPw = process.env.SEED_PASSWORD || 'ChangeMe123';
-  if (!process.env.SEED_PASSWORD) console.warn('SEED_PASSWORD yoxdur. İlkin parol: ChangeMe123');
+  let seedPw = process.env.SEED_PASSWORD;
+  if (!seedPw) {
+    if (process.env.NODE_ENV === 'production') {
+      // Zəif standart parol qoyma: təsadüfi parol yarat və jurnala yaz
+      seedPw = (await import('node:crypto')).randomBytes(12).toString('base64url');
+      console.warn(`SEED_PASSWORD yoxdur. İlkin parol (bir dəfə göstərilir): ${seedPw}`);
+    } else {
+      seedPw = 'ChangeMe123';
+      console.warn('SEED_PASSWORD yoxdur. İlkin parol: ChangeMe123 (yalnız lokal test üçün)');
+    }
+  }
   const hash = bcrypt.hashSync(seedPw, 10);
 
   const pos = {};
@@ -311,7 +324,10 @@ async function seedPortal(client) {
 export async function migrate() {
   const client = await pool.connect();
   try {
+    // Eyni anda iki nüsxə başlasa (yenidən deploy), miqrasiya növbə ilə gedir
+    await client.query('SELECT pg_advisory_lock(7770)');
     for (const q of DDL) await client.query(q);
+    for (const q of PATCH_DDL) await client.query(q);
     for (const q of DEMO_DDL) await client.query(q);
     await seedDemo(client);
     const ok = await ensureReportRole(client);
@@ -320,6 +336,7 @@ export async function migrate() {
     else disableReportPool();
     return ok;
   } finally {
+    await client.query('SELECT pg_advisory_unlock(7770)').catch(() => {});
     client.release();
   }
 }

@@ -7,14 +7,20 @@ import { migrate } from './migrate.js';
 import { api } from './api.js';
 import { pool } from './db.js';
 import { seedSales } from './demo-sales.js';
+import { securityHeaders, sameOrigin, rateLimit, appGate, gzipJson } from './security.js';
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '1mb' }));
+app.use(securityHeaders);
+app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
+app.use('/api', sameOrigin);
+app.use('/api', rateLimit({ windowMs: 60_000, max: 3000 })); // ortaq IP (NAT) arxasında yüzlərlə istifadəçi ola bilər
+app.use('/api', appGate);
+app.use('/api', gzipJson);
 app.use('/api', api);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Tapılmadı' }));

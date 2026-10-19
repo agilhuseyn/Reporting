@@ -54,6 +54,25 @@ ALTER ROLE report_ro SET search_path = demo;
 - Prosedur formatı: `EXEC sxem.ad @bas = @bas, @son = @son`. Hesabatın növü **procedure** olmalıdır.
 - Prosedurun içini portal yoxlaya bilmir. Onun yazmamasını DB hüququ təmin etməlidir.
 
+## Yalnız tətbiq rejimi
+Portal quraşdırılmış tətbiq (PWA) kimi açılır. Adi brauzer tabında yalnız quraşdırma təlimatı görünür, giriş və API bağlıdır.
+- `APP_ONLY=1` açır, `APP_ONLY=0` söndürür. Göstərilməyibsə: `NODE_ENV=production` olanda açıq, lokal işləyəndə söndürülü.
+- Server hər API sorğusunda `X-Portal-App: 1` başlığını tələb edir. Tətbiq bunu yalnız quraşdırılmış (standalone) rejimdə göndərir.
+- Bu, adi istifadəçini brauzerdən saxlayır. Qərarlı biri başlığı saxtalaşdıra bilər. Əsl qoruma parol, AD girişi və şəbəkə məhdudiyyətidir (portalı yalnız şirkət şəbəkəsindən açmaq).
+
+## Təhlükəsizlik qatları
+Başlıqlar (CSP, X-Frame-Options, nosniff, HSTS), CSRF (Origin/Sec-Fetch-Site yoxlaması), SameSite=Strict cookie, giriş cəhdi limiti (IP+EMPID, EMPID, IP), zamanlama ilə EMPID tapmanın qarşısı, çıxışda və parol/rol dəyişəndə sessiyanın ləğvi, istifadəçiyə bazanın xəta mətninin göstərilməməsi, hesabat icrasında istifadəçi başına limit və ümumi paralel limit (`RUN_CONCURRENCY`, standart 4), JSON cavabının gzip sıxılması.
+
+Yoxlama skriptləri (yalnız TEST mühitində, nümunə istifadəçilərlə):
+```
+BASE=http://localhost:3000 PW=<SEED_PASSWORD> node scripts/security-check.mjs   # serveri RUN_RATE_PER_MIN=100000 ilə işə salın
+BASE=http://localhost:3000 PW=<SEED_PASSWORD> node scripts/limit-check.mjs      # standart limitlərlə işləyən serverdə
+BASE=http://localhost:3000 PW=<SEED_PASSWORD> node scripts/load-check.mjs       # yük testi (300 istifadəçi yaradır)
+```
+
+## Satış test datası (demo sxemi)
+Server ilk açılanda arxa fonda yaradılır (`SEED_SALES_DEMO=0` söndürür). Cədvəllər: `filial`, `anbar`, `isci`, `kateqoriya`, `tedarukcu`, `mehsul`, `musteri`, `satis` (köhnə), `satis_sifaris`, `satis_setir`, `qaime`, `odenis`, `qaytarma`, `satinalma_sifaris`, `satinalma_setir`, `tedarukcu_odenisi`, `anbar_hereketi`, `anbar_qaliq`, `satis_plani`, `xerc`.
+
 ## Sonra
 - SAP istifadəçi sinxronu: prosedurdan `portal.users` doldurmaq.
 

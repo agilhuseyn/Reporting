@@ -1,7 +1,17 @@
+// Quraşdırılmış tətbiq kimi (brauzer tabı yox) işləyirmi
+export function isStandalone() {
+  try {
+    return ['standalone', 'fullscreen', 'minimal-ui'].some((m) => window.matchMedia(`(display-mode: ${m})`).matches)
+      || window.navigator.standalone === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch(path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), 'X-Portal-App': isStandalone() ? '1' : '0' },
     body: body ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
   });

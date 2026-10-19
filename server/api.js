@@ -1,6 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
+import { makeGate, makeLimiter, appOnly } from './security.js';
 import { login, logout, requireAuth, needCap, needAdmin, audit, publicUser, ALL_CAPS } from './auth.js';
 import { reportsFor, effective, visibleColumns } from './perms.js';
 import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } from './connections.js';
@@ -10,6 +11,13 @@ import { runForUser, runTest, runOptions, detectParams, guardAuto, HttpError } f
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 export const api = express.Router();
+
+const numId = (v) => {
+  if (!/^\d{1,9}$/.test(String(v))) throw new HttpError(404, 'Tapılmadı');
+  return Number(v);
+};
+// Giriş ekranı üçün (autentifikasiyasız): portal yalnız tətbiq kimi açılırmı
+api.get('/app-config', (_req, res) => res.json({ appOnly: appOnly() }));
 
 api.post('/auth/login', wrap(login));
 api.post('/auth/logout', logout);
@@ -22,7 +30,7 @@ api.get('/me', (req, res) => res.json(req.user));
 api.get('/reports', wrap(async (req, res) => res.json(await reportsFor(req.user.empid))));
 
 async function loadReport(id) {
-  const r = await pool.query('SELECT * FROM portal.reports WHERE id = $1 AND active', [id]);
+  const r = await pool.query('SELECT * FROM portal.reports WHERE id = $1 AND active', [numId(id)]);
   if (!r.rows[0]) throw new HttpError(404, 'Hesabat tapılmadı');
   return r.rows[0];
 }
@@ -53,11 +61,23 @@ api.get('/reports/:id/options/:param', wrap(async (req, res) => {
   if (!perm.allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
   const p = report.params.find((x) => x.name === req.params.param);
   if (!p?.optionsSql) throw new HttpError(404, 'Siyahı yoxdur');
-  res.json(await runOptions(p.optionsSql));
+  try {
+    res.json(await runOptions(p.optionsSql));
+  } catch (e) {
+    console.error('Siyahı xətası:', e.message);
+    throw new HttpError(400, 'Siyahı yüklənmədi');
+  }
 }));
+
+// Hesabat icrası: istifadəçi başına dəqiqədə 30, eyni anda ən çox 2; serverdə ümumi 4 paralel icra.
+const runLimiter = makeLimiter({ windowMs: 60_000, max: Number(process.env.RUN_RATE_PER_MIN) || 30 });
+const runGate = makeGate({ max: Number(process.env.RUN_CONCURRENCY) || 4, maxQueue: 500, waitMs: 30_000 });
+const userActive = new Map();
 
 api.post('/reports/:id/run', wrap(async (req, res) => {
   const report = await loadReport(req.params.id);
+  // Yetki ilk yoxlanır: yetkisiz istifadəçi hesabatın parametrlərini belə görməsin
+  if (!(await effective(req.user.empid, report.id)).allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
   const given = req.body?.params || {};
   const params = {};
   for (const p of report.params) {
@@ -65,9 +85,21 @@ api.post('/reports/:id/run', wrap(async (req, res) => {
     if (p.required && (v === undefined || v === '' || v === null)) {
       throw new HttpError(400, `Parametr məcburidir: ${p.label || p.name}`);
     }
+    if (v !== undefined && v !== null && (typeof v === 'object' || String(v).length > 500)) {
+      throw new HttpError(400, `Parametr dəyəri yanlışdır: ${p.label || p.name}`);
+    }
     params[p.name] = v;
   }
-  const out = await runForUser(req.user.empid, report, params);
+  if (runLimiter.hit(req.user.empid)) throw new HttpError(429, 'Çox sorğu. Bir az gözləyin.');
+  if ((userActive.get(req.user.empid) || 0) >= 2) throw new HttpError(429, 'Əvvəlki sorğularınız hələ işləyir.');
+  userActive.set(req.user.empid, (userActive.get(req.user.empid) || 0) + 1);
+  let out;
+  try {
+    out = await runGate.run(() => runForUser(req.user.empid, report, params));
+  } finally {
+    const n = (userActive.get(req.user.empid) || 1) - 1;
+    if (n <= 0) userActive.delete(req.user.empid); else userActive.set(req.user.empid, n);
+  }
   await audit(req.user.empid, 'run', { report: report.code, rows: out.rows.length, ms: out.ms, params });
   res.json(out);
 }));
@@ -105,6 +137,7 @@ admin.get('/reports', needCap('reports', 'permissions'), wrap(async (_req, res) 
 }));
 
 admin.get('/reports/:id', needCap('reports', 'permissions'), wrap(async (req, res) => {
+  numId(req.params.id);
   const r = await pool.query('SELECT * FROM portal.reports WHERE id = $1', [req.params.id]);
   if (!r.rows[0]) throw new HttpError(404, 'Tapılmadı');
   const cols = await pool.query('SELECT * FROM portal.report_columns WHERE report_id = $1 ORDER BY pos, code', [req.params.id]);
@@ -185,6 +218,7 @@ admin.post('/reports', needCap('reports'), wrap(async (req, res) => {
 }));
 
 admin.put('/reports/:id', needCap('reports'), wrap(async (req, res) => {
+  numId(req.params.id);
   const b = req.body || {};
   await guardAuto(b.sql, b.kind || 'query');
   const client = await pool.connect();
@@ -337,7 +371,7 @@ admin.post('/users', needCap('users'), wrap(async (req, res) => {
   const b = req.body || {};
   if (!/^[A-Za-z0-9_.-]{2,30}$/.test(b.empid || '')) throw new HttpError(400, 'EMPID yanlışdır');
   if (!b.name) throw new HttpError(400, 'Ad lazımdır');
-  if (!b.password || b.password.length < 8) throw new HttpError(400, 'Parol ən azı 8 simvol');
+  if (typeof b.password !== 'string' || b.password.length < 8 || b.password.length > 128) throw new HttpError(400, 'Parol 8-128 simvol olmalıdır');
   const isAdmin = req.user.role === 'admin';
   const client = await pool.connect();
   try {
@@ -345,7 +379,7 @@ admin.post('/users', needCap('users'), wrap(async (req, res) => {
     await client.query(
       'INSERT INTO portal.users (empid,name,password_hash,role,caps,position_id) VALUES ($1,$2,$3,$4,$5,$6)',
       [b.empid, b.name, bcrypt.hashSync(b.password, 10), isAdmin ? b.role || 'user' : 'user',
-        isAdmin ? (b.caps || []).filter((c) => ALL_CAPS.includes(c)) : [], b.position_id || null]);
+        isAdmin ? (Array.isArray(b.caps) ? b.caps : []).filter((c) => ALL_CAPS.includes(c)) : [], b.position_id || null]);
     await setGroups(client, b.empid, b.groups);
     await client.query('COMMIT');
     await audit(req.user.empid, 'user.create', { empid: b.empid });
@@ -369,7 +403,7 @@ admin.put('/users/:empid', needCap('users'), wrap(async (req, res) => {
     if (!cur) throw new HttpError(404, 'İstifadəçi tapılmadı');
     if (!isAdmin && cur.role !== 'user') throw new HttpError(403, 'Dəstək hesabını yalnız admin dəyişir');
     const role = isAdmin ? b.role || cur.role : cur.role;
-    const caps = isAdmin ? (b.caps || cur.caps).filter((c) => ALL_CAPS.includes(c)) : cur.caps;
+    const caps = isAdmin ? (Array.isArray(b.caps) ? b.caps : cur.caps).filter((c) => ALL_CAPS.includes(c)) : cur.caps;
     if (req.params.empid === req.user.empid && (b.active === false || role !== 'admin') && cur.role === 'admin') {
       throw new HttpError(400, 'Öz admin yetkinizi götürə bilməzsiniz');
     }
@@ -377,8 +411,12 @@ admin.put('/users/:empid', needCap('users'), wrap(async (req, res) => {
       'UPDATE portal.users SET name=$2, role=$3, caps=$4, position_id=$5, active=$6 WHERE empid=$1',
       [cur.empid, b.name || cur.name, role, caps, b.position_id === undefined ? cur.position_id : b.position_id || null,
         b.active === undefined ? cur.active : !!b.active]);
+    // Parol, rol, yetki və ya aktivlik dəyişəndə köhnə sessiyalar bağlanır
+    if (b.password || role !== cur.role || b.active === false || JSON.stringify(caps) !== JSON.stringify(cur.caps)) {
+      await client.query('UPDATE portal.users SET session_epoch = session_epoch + 1 WHERE empid=$1', [cur.empid]);
+    }
     if (b.password) {
-      if (b.password.length < 8) throw new HttpError(400, 'Parol ən azı 8 simvol');
+      if (typeof b.password !== 'string' || b.password.length < 8 || b.password.length > 128) throw new HttpError(400, 'Parol 8-128 simvol olmalıdır');
       await client.query('UPDATE portal.users SET password_hash=$2 WHERE empid=$1', [cur.empid, bcrypt.hashSync(b.password, 10)]);
     }
     if (Array.isArray(b.groups)) await setGroups(client, cur.empid, b.groups);
@@ -400,6 +438,7 @@ admin.post('/positions', needCap('users'), wrap(async (req, res) => {
   res.json(r.rows[0]);
 }));
 admin.delete('/positions/:id', needCap('users'), wrap(async (req, res) => {
+  numId(req.params.id);
   await pool.query('DELETE FROM portal.positions WHERE id=$1', [req.params.id]);
   await pool.query(`DELETE FROM portal.perm_report WHERE subject_type='position' AND subject_id=$1`, [req.params.id]);
   await pool.query(`DELETE FROM portal.perm_column WHERE subject_type='position' AND subject_id=$1`, [req.params.id]);
@@ -412,6 +451,7 @@ admin.post('/groups', needCap('users'), wrap(async (req, res) => {
   res.json(r.rows[0]);
 }));
 admin.delete('/groups/:id', needCap('users'), wrap(async (req, res) => {
+  numId(req.params.id);
   await pool.query('DELETE FROM portal.groups WHERE id=$1', [req.params.id]);
   await pool.query(`DELETE FROM portal.perm_report WHERE subject_type='group' AND subject_id=$1`, [req.params.id]);
   await pool.query(`DELETE FROM portal.perm_column WHERE subject_type='group' AND subject_id=$1`, [req.params.id]);

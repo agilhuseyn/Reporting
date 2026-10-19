@@ -11,7 +11,7 @@ export const MAX_ROWS = 50000;
 // Qoruma qatı: yalnız bir SELECT / WITH sorğusu. Əsas qoruma report_ro rolu və oxuma tranzaksiyasıdır.
 const FORBIDDEN = new RegExp(
   '\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|execute|merge|vacuum|analyze|' +
-    'reindex|listen|notify|lock|set|reset|do|portal|information_schema|dblink|lo_import|lo_export|query_to_xml)\\b|\\bpg_[a-z_]+',
+    'reindex|listen|notify|lock|set|set_config|reset|do|portal|information_schema|dblink|lo_import|lo_export|query_to_xml)\\b|\\bpg_[a-z_]+',
   'i'
 );
 
@@ -125,7 +125,29 @@ function filler(len, type) {
 
 const paramTypes = (list) => Object.fromEntries((list || []).map((p) => [p.name, p.type]));
 
+// İstifadəçiyə bazanın daxili xəta mətni (cədvəl/sütun adları) göstərilmir. Tam xəta yalnız jurnala yazılır.
+function userSafe(e, report) {
+  if (!(e instanceof HttpError) || e.status !== 400) return e;
+  const m = String(e.message || '');
+  console.error(`Hesabat xətası [${report.code}]: ${m}`);
+  if (/statement timeout|canceling statement|timeout|Timeout/i.test(m)) {
+    return new HttpError(400, 'Sorğu çox uzun çəkdi (30 san). Filtrləri daraldın.');
+  }
+  if (/invalid input syntax|out of range|Conversion failed|Invalid (date|number)/i.test(m)) {
+    return new HttpError(400, 'Parametr dəyəri yanlışdır');
+  }
+  return new HttpError(400, 'Hesabat icra edilə bilmədi. Administrator ilə əlaqə saxlayın.');
+}
+
 export async function runForUser(empid, report, params) {
+  try {
+    return await runForUserInner(empid, report, params);
+  } catch (e) {
+    throw userSafe(e, report);
+  }
+}
+
+async function runForUserInner(empid, report, params) {
   const perm = await effective(empid, report.id);
   if (!perm.allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
   const rcols = (

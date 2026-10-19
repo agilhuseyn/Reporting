@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node --max-old-space-size=300 server/index.js",
     "dev": "node server/index.js",
     "test": "node --test"
   },

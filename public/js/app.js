@@ -1,5 +1,5 @@
 import { h, clear, toast } from './dom.js';
-import { api } from './api.js';
+import { api, isStandalone } from './api.js';
 import { t, lang, setLang, LANGS } from './i18n.js';
 import { userPage } from './user.js';
 import { adminReports } from './admin-reports.js';
@@ -93,7 +93,37 @@ async function render() {
   }
 }
 
+let installEvent = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installEvent = e;
+  if (gateShown) showGate();
+});
+let gateShown = false;
+
+// Portal yalnız quraşdırılmış tətbiq kimi açılır. Adi brauzer tabında yalnız quraşdırma təlimatı görünür.
+function showGate() {
+  gateShown = true;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  clear(root, h('div', { class: 'login-wrap' }, h('div', { class: 'login-lang' }, langSwitch()),
+    h('div', { class: 'card pad col gap12 login' },
+      h('div', { class: 'brand big' }, h('span', { class: 'logo' }, 'HP'), t('appName')),
+      h('h1', {}, t('gate.title')),
+      h('div', { class: 'muted' }, t('gate.text')),
+      installEvent ? h('button', { class: 'btn primary', onclick: async () => { installEvent.prompt(); } }, t('gate.install')) : null,
+      h('div', { class: 'note' }, ios ? t('gate.ios') : t('gate.other')))));
+}
+
 async function boot() {
+  try {
+    const cfg = await fetch('/api/app-config', { credentials: 'same-origin' }).then((r) => r.json()).catch(() => ({}));
+    if (cfg.appOnly && !isStandalone()) {
+      showGate();
+      return;
+    }
+  } catch {
+    /* konfiqurasiya alınmasa, adi rejimlə davam edir */
+  }
   try {
     me = await api('/api/me');
   } catch {
@@ -103,7 +133,7 @@ async function boot() {
 }
 
 window.addEventListener('hashchange', render);
-window.addEventListener('langchange', render);
+window.addEventListener('langchange', () => (gateShown ? showGate() : render()));
 window.addEventListener('unauth', () => {
   me = null;
   render();
