@@ -48,6 +48,7 @@ const DDL = [
      id serial PRIMARY KEY, subject_type text NOT NULL, subject_id text NOT NULL,
      report_id int REFERENCES portal.reports(id) ON DELETE CASCADE, column_code text NOT NULL,
      op text NOT NULL CHECK (op IN ('in','eq','gte','lte')), value jsonb NOT NULL)`,
+  `ALTER TABLE portal.report_columns ADD COLUMN IF NOT EXISTS src text`,
   `CREATE TABLE IF NOT EXISTS portal.connections (
      kind text PRIMARY KEY, config jsonb NOT NULL, secret_enc text, enabled boolean NOT NULL DEFAULT false,
      updated_at timestamptz DEFAULT now(), updated_by text)`,

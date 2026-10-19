@@ -56,15 +56,32 @@ export async function adminReports(root, me) {
   const text = (key, extra = {}) => h('input', { class: 'inp', value: rep[key] ?? '', readOnly: !canEdit || extra.readOnly,
     oninput: (e) => { rep[key] = e.target.value; } });
 
+  const known = () => rep.columns.map((c) => ({ code: c.code, src: c.src, type: c.type, label_az: c.label_az }));
+  const analyzeSql = () => api('/api/admin/reports/analyze', {
+    method: 'POST',
+    body: { sql: rep.sql, known: known(), columns: testOut && !testOut.error ? testOut.columns : null },
+  });
+
+  // Parametrlər SQL-dən tapılır. Ad və tip müqayisə olunan sütundan götürülür (məs. filial_kod = @filial → "Filial").
   async function syncParams() {
-    const { params } = await api('/api/admin/reports/detect', { method: 'POST', body: { sql: rep.sql } });
+    const a = await analyzeSql();
     const old = Object.fromEntries(rep.params.map((p) => [p.name, p]));
-    rep.params = params.map((n) => old[n] || { name: n, type: n.includes('tarix') || n.includes('date') ? 'date' : 'text', required: false, label: n });
+    rep.params = a.detected.map((n) => {
+      const hit = a.params[n];
+      return old[n] || {
+        name: n, required: false, label: hit?.label || n,
+        type: hit?.type || (n.includes('tarix') || n.includes('date') ? 'date' : 'text'),
+      };
+    });
+    return a;
   }
 
   async function runTest() {
     try {
-      await syncParams();
+      const a = await syncParams();
+      if (!rep.columns.length && a.columns.length && !a.star) {
+        rep.columns = a.columns.map((c) => ({ code: c.code, src: c.src, label_az: c.label, label_en: c.label, label_ru: c.label, type: c.type, sensitivity: 'normal' }));
+      }
       for (const p of rep.params) if (testVals[p.name] === undefined) testVals[p.name] = p.default && !String(p.default).startsWith('$') ? p.default : (p.type === 'date' ? new Date().toISOString().slice(0, 10) : '');
       drawEditor();
     } catch (e) {
@@ -82,13 +99,22 @@ export async function adminReports(root, me) {
     drawEditor();
   }
 
-  function mergeColumns() {
-    const old = Object.fromEntries(rep.columns.map((c) => [c.code, c]));
-    rep.columns = testOut.columns.map((c) => old[c.code] || {
-      code: c.code, label_az: c.code, label_en: c.code, label_ru: c.code, type: c.type, sensitivity: 'normal',
-    });
-    drawEditor();
-    toast(t('columnsFound'));
+  // Sütun kodu və adı SQL-dən: filial_kod AS Filial → kod filial_kod, ad Filial.
+  async function mergeColumns() {
+    try {
+      const a = await analyzeSql();
+      const old = Object.fromEntries(rep.columns.map((c) => [c.code, c]));
+      rep.columns = a.columns.map((c) => {
+        const o = old[c.code];
+        return o
+          ? { ...o, src: c.src, type: c.type }
+          : { code: c.code, src: c.src, label_az: c.label, label_en: c.label, label_ru: c.label, type: c.type, sensitivity: 'normal' };
+      });
+      drawEditor();
+      toast(t('columnsFound'));
+    } catch (e) {
+      toast(e.message, 'err');
+    }
   }
 
   async function save() {
@@ -123,7 +149,7 @@ export async function adminReports(root, me) {
   function columnRow(c) {
     const inp = (k) => h('input', { class: 'inp sm', value: c[k] || '', oninput: (e) => { c[k] = e.target.value; } });
     return h('tr', {},
-      h('td', { class: 'mono' }, c.code), h('td', {}, inp('label_az')), h('td', {}, inp('label_en')), h('td', {}, inp('label_ru')),
+      h('td', { class: 'mono' }, c.code), h('td', { class: 'mono small muted' }, c.src || ''), h('td', {}, inp('label_az')), h('td', {}, inp('label_en')), h('td', {}, inp('label_ru')),
       h('td', {}, h('select', { class: 'inp sm', onchange: (e) => { c.type = e.target.value; } },
         ['text', 'number', 'date'].map((x) => h('option', { value: x, selected: x === c.type }, t(`ptype.${x}`))))),
       h('td', {}, h('select', { class: 'inp sm', onchange: (e) => { c.sensitivity = e.target.value; } },
@@ -195,7 +221,7 @@ export async function adminReports(root, me) {
         h('div', { class: 'toolbar' }, h('b', {}, t('columns')), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('columnsHint'))),
         rep.columns.length
           ? h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
-              h('thead', {}, h('tr', {}, [t('code'), 'AZ', 'EN', 'RU', t('type'), t('sensitivity')].map((x) => h('th', {}, x)))),
+              h('thead', {}, h('tr', {}, [t('code'), t('srcName'), 'AZ', 'EN', 'RU', t('type'), t('sensitivity')].map((x) => h('th', {}, x)))),
               h('tbody', {}, rep.columns.map(columnRow))))
           : h('div', { class: 'note' }, t('noColumns'))),
       rep.versions?.length ? h('div', { class: 'card pad' },

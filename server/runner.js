@@ -1,7 +1,7 @@
 import { pool } from './db.js';
 import { effective, visibleColumns, resolveToken } from './perms.js';
 import { HttpError } from './errors.js';
-import { getSqlSource } from './connections.js';
+import { getSqlSource, loadConn } from './connections.js';
 import { guardMssql, canWrap, colType, normVal, buildWrapped, applyJs, dateInput } from './mssql-dialect.js';
 
 export { HttpError };
@@ -56,6 +56,8 @@ export function bindParams(sql, values = {}, types = {}) {
 }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Sütunun real adı (SQL nəticəsindəki ad) təhlükəsiz dırnaqlanır
+const pgq = (name) => `r."${String(name).replace(/"/g, '""')}"`;
 const NUMERIC_OIDS = new Set([20, 21, 23, 700, 701, 1700, 26]);
 const DATE_OIDS = new Set([1082, 1114, 1184]);
 export const typeOf = (oid) => (NUMERIC_OIDS.has(oid) ? 'number' : DATE_OIDS.has(oid) ? 'date' : 'text');
@@ -156,7 +158,7 @@ export async function runForUser(empid, report, params) {
       if (!IDENT.test(r.column)) throw new HttpError(500, 'Yanlış qayda sütunu');
       const rc = rcols.find((c) => c.code === r.column);
       if (!rc) throw new HttpError(500, `Qayda sütunu hesabatda yoxdur: ${r.column}`);
-      const col = `r."${r.column}"`;
+      const col = pgq(rc.src || rc.code);
       const raw = Array.isArray(r.value) ? r.value.map(resolveToken) : resolveToken(r.value);
       if (r.op === 'in') {
         args.push([].concat(raw).map(String));
@@ -174,7 +176,8 @@ export async function runForUser(empid, report, params) {
     const select = vis
       .map((c) => {
         if (!IDENT.test(c.code)) throw new HttpError(500, 'Yanlış sütun kodu');
-        return c.masked ? `length(r."${c.code}"::text) AS "${c.code}"` : `r."${c.code}"`;
+        const from = pgq(c.src || c.code);
+        return c.masked ? `length(${from}::text) AS "${c.code}"` : `${from} AS "${c.code}"`;
       })
       .join(', ');
     const sql = `SELECT ${select} FROM (${text}) AS r${where.length ? ' WHERE ' + where.join(' AND ') : ''} LIMIT ${MAX_ROWS + 1}`;
@@ -230,4 +233,10 @@ export async function runOptions(sql) {
   }
   const res = await execPg(src, { text: `SELECT * FROM (${guardSql(sql)}) AS r LIMIT 500`, values: [] });
   return res.rows.map((r) => ({ value: String(r[0]), label: String(r[1] ?? r[0]) }));
+}
+
+// Hesabatı saxlayanda: aktiv bazanın dialektinə görə yoxlayır (MSSQL aktivdirsə MSSQL qaydaları).
+export async function guardAuto(sql, kind) {
+  const c = await loadConn('sql').catch(() => null);
+  return c?.enabled && c.config?.type === 'mssql' ? guardMssql(sql, kind) : guardSql(sql);
 }

@@ -54,7 +54,9 @@ export function normVal(v) {
 }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const q = (c) => {
+// Kod (alias) yalnız hərf/rəqəm/_ ola bilər. Real ad ( src ) isə hər şey ola bilər, ] iki dəfə yazılır.
+const q = (c) => `[${String(c).replace(/]/g, ']]')}]`;
+const code = (c) => {
   if (!IDENT.test(c)) throw new HttpError(500, 'Yanlış sütun kodu');
   return `[${c}]`;
 };
@@ -73,7 +75,7 @@ export function buildWrapped({ inner, vis, rules, rcols, top, resolve }) {
   for (const r of rules) {
     const rc = rcols.find((c) => c.code === r.column);
     if (!rc) throw new HttpError(500, `Qayda sütunu hesabatda yoxdur: ${r.column}`);
-    const col = `r.${q(r.column)}`;
+    const col = `r.${q(rc.src || rc.code)}`;
     const txt = `CAST(${col} AS NVARCHAR(4000))`;
     const raw = Array.isArray(r.value) ? r.value.map(resolve) : resolve(r.value);
     if (r.op === 'in') {
@@ -88,7 +90,7 @@ export function buildWrapped({ inner, vis, rules, rcols, top, resolve }) {
       else where.push(`${txt} ${op} ${add('text', String(raw))}`);
     }
   }
-  const select = vis.map((c) => (c.masked ? `LEN(CAST(r.${q(c.code)} AS NVARCHAR(MAX))) AS ${q(c.code)}` : `r.${q(c.code)}`)).join(', ');
+  const select = vis.map((c) => (c.masked ? `LEN(CAST(r.${q(c.src || c.code)} AS NVARCHAR(MAX))) AS ${code(c.code)}` : `r.${q(c.src || c.code)} AS ${code(c.code)}`)).join(', ');
   const sql = `SELECT TOP (${top}) ${select} FROM (${inner}) AS r${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
   return { sql, extra };
 }
@@ -104,8 +106,9 @@ export function applyJs({ cols, rows, vis, rules, rcols, resolve, max }) {
     return i;
   };
   const checks = rules.map((r) => {
-    const i = pos(r.column);
-    const type = rcols.find((c) => c.code === r.column)?.type || 'text';
+    const rc = rcols.find((c) => c.code === r.column);
+    const i = pos(rc?.src || r.column);
+    const type = rc?.type || 'text';
     const raw = Array.isArray(r.value) ? r.value.map(resolve) : resolve(r.value);
     const cmp = (v) => (type === 'number' ? Number(v) : type === 'date' ? String(v).slice(0, 10) : String(v));
     if (r.op === 'in') {
@@ -120,7 +123,7 @@ export function applyJs({ cols, rows, vis, rules, rcols, resolve, max }) {
       return r.op === 'gte' ? a >= b : a <= b;
     };
   });
-  const idx = vis.map((c) => pos(c.code));
+  const idx = vis.map((c) => pos(c.src || c.code));
   const out = [];
   for (const row of rows) {
     if (!checks.every((f) => f(row))) continue;

@@ -36,11 +36,12 @@ test('buildWrapped: sütunlar, maska, qaydalar və TOP', () => {
     { column: 'amt', op: 'lte', value: 50 },
   ];
   const { sql, extra } = buildWrapped({ inner: 'SELECT 1 x', vis, rules, rcols, top: 11, resolve: (v) => v });
-  assert.match(sql, /^SELECT TOP \(11\) r\.\[filial\], LEN\(CAST\(r\.\[phone\] AS NVARCHAR\(MAX\)\)\) AS \[phone\] FROM \(SELECT 1 x\) AS r WHERE /);
+  assert.match(sql, /^SELECT TOP \(11\) r\.\[filial\] AS \[filial\], LEN\(CAST\(r\.\[phone\] AS NVARCHAR\(MAX\)\)\) AS \[phone\] FROM \(SELECT 1 x\) AS r WHERE /);
   assert.match(sql, /CAST\(r\.\[filial\] AS NVARCHAR\(4000\)\) IN \(@__r0, @__r1\)/);
   assert.match(sql, /CAST\(r\.\[dt\] AS date\) >= CAST\(@__r2 AS date\)/);
   assert.match(sql, /r\.\[amt\] <= @__r3/);
   assert.deepEqual(extra.map((e) => e.type), ['text', 'text', 'date', 'number']);
+  assert.match(buildWrapped({ inner: 'x', vis: [{ code: 'a', src: 'Filial ]adı', masked: false }], rules: [], rcols: [], top: 1, resolve: (v) => v }).sql, /r\.\[Filial ]]adı\] AS \[a\]/);
   assert.throws(() => buildWrapped({ inner: 'x', vis: [{ code: 'a]; DROP', masked: false }], rules: [], rcols: [], top: 1, resolve: (v) => v }));
 });
 

@@ -5,7 +5,8 @@ import { login, logout, requireAuth, needCap, needAdmin, audit, publicUser, ALL_
 import { reportsFor, effective, visibleColumns } from './perms.js';
 import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } from './connections.js';
 import { testLdap } from './ldap.js';
-import { runForUser, runTest, runOptions, detectParams, guardSql, HttpError } from './runner.js';
+import { analyze } from './sqlparse.js';
+import { runForUser, runTest, runOptions, detectParams, guardAuto, HttpError } from './runner.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 export const api = express.Router();
@@ -118,6 +119,14 @@ admin.post('/reports/detect', needCap('reports'), wrap(async (req, res) => {
   res.json({ params: detectParams(req.body?.sql) });
 }));
 
+// SQL-dən sütun kodu/adı və parametr adı/tipi avtomatik çıxarılır.
+admin.post('/reports/analyze', needCap('reports'), wrap(async (req, res) => {
+  const known = Array.isArray(req.body?.known) ? req.body.known : [];
+  const rc = Array.isArray(req.body?.columns) ? req.body.columns : null;
+  const a = analyze(String(req.body?.sql || ''), rc, known);
+  res.json({ ...a, detected: detectParams(req.body?.sql) });
+}));
+
 admin.post('/reports/test', needCap('reports'), wrap(async (req, res) => {
   const out = await runTest(req.body?.sql, req.body?.params || {}, req.body?.types || {}, req.body?.kind);
   await audit(req.user.empid, 'test', { ms: out.ms, rows: out.rows.length });
@@ -132,11 +141,11 @@ async function saveColumns(client, reportId, columns) {
   let i = 0;
   for (const c of columns) {
     await client.query(
-      `INSERT INTO portal.report_columns (report_id,code,label_az,label_en,label_ru,type,sensitivity,pos)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (report_id, code) DO UPDATE SET label_az=$3,label_en=$4,label_ru=$5,type=$6,sensitivity=$7,pos=$8`,
+      `INSERT INTO portal.report_columns (report_id,code,label_az,label_en,label_ru,type,sensitivity,pos,src)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (report_id, code) DO UPDATE SET label_az=$3,label_en=$4,label_ru=$5,type=$6,sensitivity=$7,pos=$8,src=$9`,
       [reportId, c.code, c.label_az || c.code, c.label_en || c.label_az || c.code, c.label_ru || c.label_az || c.code,
-        c.type || 'text', c.sensitivity || 'normal', i++]);
+        c.type || 'text', c.sensitivity || 'normal', i++, c.src ? String(c.src).slice(0, 200) : null]);
   }
   await client.query('DELETE FROM portal.report_columns WHERE report_id = $1 AND NOT (code = ANY($2::text[]))', [reportId, codes]);
   await client.query('DELETE FROM portal.perm_column WHERE report_id = $1 AND NOT (column_code = ANY($2::text[]))', [reportId, codes]);
@@ -147,7 +156,7 @@ admin.post('/reports', needCap('reports'), wrap(async (req, res) => {
   const b = req.body || {};
   if (!/^[A-Za-z0-9_]{2,60}$/.test(b.code || '')) throw new HttpError(400, 'Kod: hərf, rəqəm, alt xətt (2-60)');
   if (!b.name_az) throw new HttpError(400, 'Ad (AZ) lazımdır');
-  guardSql(b.sql);
+  await guardAuto(b.sql, b.kind || 'query');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -174,7 +183,7 @@ admin.post('/reports', needCap('reports'), wrap(async (req, res) => {
 
 admin.put('/reports/:id', needCap('reports'), wrap(async (req, res) => {
   const b = req.body || {};
-  guardSql(b.sql);
+  await guardAuto(b.sql, b.kind || 'query');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
