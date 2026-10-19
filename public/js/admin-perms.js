@@ -25,7 +25,7 @@ export async function adminPerms(root) {
   let cfg = null; // {granted, canExport, columns:{code:mode}, rules:[]}
   let repCols = [];
   let effOut = null;
-  let effUser = subjects.users.find((u) => u.role === 'user')?.empid || '';
+  let effUser = subjects.users.find((u) => u.role === 'user')?.id || '';
 
   function subjectList() {
     if (tab === 'position') {
@@ -40,7 +40,7 @@ export async function adminPerms(root) {
       return out;
     }
     if (tab === 'group') return subjects.groups.map((g) => ({ type: 'group', id: String(g.id), name: g.name, level: 0, sub: `${g.members}` }));
-    return subjects.users.filter((u) => u.active).map((u) => ({ type: 'user', id: u.empid, name: u.name, level: 0, sub: u.empid }));
+    return subjects.users.filter((u) => u.active).map((u) => ({ type: 'user', id: u.id, name: u.name, level: 0, sub: u.empid }));
   }
 
   function drawSide() {
@@ -119,7 +119,7 @@ export async function adminPerms(root) {
   async function runEffective() {
     if (!repId || !effUser) return;
     try {
-      effOut = await api(`/api/admin/effective?empid=${encodeURIComponent(effUser)}&reportId=${repId}`);
+      effOut = await api(`/api/admin/effective?userId=${encodeURIComponent(effUser)}&reportId=${repId}`);
     } catch (e) {
       toast(e.message, 'err');
     }
@@ -130,7 +130,7 @@ export async function adminPerms(root) {
     return h('div', { class: 'card' },
       h('div', { class: 'toolbar' }, h('b', {}, t('effective')), h('div', { class: 'grow' }),
         h('select', { class: 'inp sm', 'aria-label': t('user'), onchange: (e) => { effUser = e.target.value; effOut = null; } },
-          subjects.users.filter((u) => u.active).map((u) => h('option', { value: u.empid, selected: u.empid === effUser }, `${u.name} · ${u.empid}`))),
+          subjects.users.filter((u) => u.active).map((u) => h('option', { value: u.id, selected: u.id === effUser }, `${u.name} · ${u.empid}`))),
         h('button', { class: 'btn sm', onclick: runEffective }, t('check'))),
       effOut ? h('div', { class: 'pad col gap8' },
         h('div', { class: effOut.allowed ? 'ok-text' : 'err-text' }, effOut.allowed ? t('reportAllowed') : t('reportDenied')),

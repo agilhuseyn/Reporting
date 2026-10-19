@@ -101,7 +101,7 @@ export async function logout(req, res) {
 
 export function publicUser(u) {
   const caps = u.role === 'admin' ? ALL_CAPS : u.role === 'support' ? u.caps || [] : [];
-  return { empid: u.empid, name: u.name, role: u.role, caps, position_id: u.position_id };
+  return { id: u.uid, empid: u.empid, name: u.name, role: u.role, caps };
 }
 
 export async function requireAuth(req, _res, next) {

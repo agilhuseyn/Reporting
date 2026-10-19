@@ -93,6 +93,13 @@ for (const e of ['100001', '100002', '100003', '100317', '100482', '100501']) {
   sessions[e] = l.cookie;
   ok(`Düzgün giriş ${e}`, l.r.status === 200 && !!l.cookie, String(l.r.status));
 }
+// EMPID -> UUID (API-də istifadəçi UUID ilə tanınır)
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const U = {};
+{
+  const sj = await call('GET', '/api/admin/subjects', { cookie: sessions['100001'] });
+  for (const u of sj.json?.users || []) U[u.empid] = u.id;
+}
 {
   const bad = await call('POST', '/api/auth/login', { body: { empid: '100001', password: 'yanlis-parol' } });
   const none = await call('POST', '/api/auth/login', { body: { empid: 'yoxdur999', password: 'yanlis-parol' } });
@@ -141,11 +148,11 @@ sec('Yetki keçidi (admin marşrutları)');
     ['GET', '/api/admin/users'], ['GET', '/api/admin/audit'], ['GET', '/api/admin/connections'], ['GET', '/api/admin/reports'],
     ['GET', '/api/admin/permissions?subjectType=user&subjectId=100482'], ['GET', '/api/admin/subjects'], ['GET', '/api/admin/categories'],
     ['POST', '/api/admin/users', { empid: 'hack1', name: 'x', password: 'parol12345', role: 'admin' }],
-    ['PUT', '/api/admin/users/100317', { role: 'admin' }], ['PUT', '/api/admin/users/100001', { password: 'yenisifre123' }],
+    ['PUT', `/api/admin/users/${U['100317']}`, { role: 'admin' }], ['PUT', `/api/admin/users/${U['100001']}`, { password: 'yenisifre123' }],
     ['PUT', '/api/admin/connections/sql', {}], ['POST', '/api/admin/connections/sql/test', {}], ['DELETE', '/api/admin/connections/sql'],
     ['POST', '/api/admin/reports/test', { sql: 'select 1' }], ['POST', '/api/admin/reports', { name_az: 'x', sql: 'select 1' }],
-    ['PUT', '/api/admin/permissions', { subjectType: 'user', subjectId: '100482', reportId: 1, granted: true, columns: {}, rules: [] }],
-    ['POST', '/api/admin/positions', { name: 'hack' }], ['DELETE', '/api/admin/positions/1'], ['POST', '/api/admin/groups', { name: 'hack' }],
+    ['PUT', '/api/admin/permissions', { subjectType: 'user', subjectId: U['100482'], reportId: U['100482'], granted: true, columns: {}, rules: [] }],
+    ['POST', '/api/admin/positions', { name: 'hack' }], ['DELETE', `/api/admin/positions/${U['100482']}`], ['POST', '/api/admin/groups', { name: 'hack' }],
   ];
   for (const [m, p, b] of adminRoutes) {
     const r = await call(m, p, { cookie: sessions['100482'], body: b });
@@ -158,7 +165,7 @@ sec('Yetki keçidi (admin marşrutları)');
   }
   const r1 = await call('GET', '/api/admin/users', { cookie: sessions['100002'] });
   ok('Dəstək (users yetkisi yoxdur) → istifadəçi siyahısı qadağan', r1.status === 403, String(r1.status));
-  const r2 = await call('PUT', '/api/admin/users/100001', { cookie: sessions['100003'], body: { role: 'user', password: 'yenisifre123' } });
+  const r2 = await call('PUT', `/api/admin/users/${U['100001']}`, { cookie: sessions['100003'], body: { role: 'user', password: 'yenisifre123' } });
   ok('Dəstək admin hesabını dəyişə bilmir', r2.status === 403, String(r2.status));
   const r3 = await call('GET', '/api/admin/audit', { cookie: sessions['100003'] });
   ok('Dəstək (audit yetkisi yoxdur) → jurnal qadağan', r3.status === 403, String(r3.status));
@@ -194,7 +201,9 @@ sec('Məlumat sızması və yetki (sütun, dəyər qaydası)');
   // yetkisi olmayan
   const none = await call('GET', '/api/reports', { cookie: sessions['100501'] });
   ok('Yetkisiz istifadəçiyə hesabat siyahısı boşdur', Array.isArray(none.json) && none.json.length === 0);
-  for (let rid = 1; rid <= 12; rid++) {
+  const allReports = (await call('GET', '/api/admin/reports', { cookie: sessions['100001'] })).json || [];
+  ok('Admin hesabat siyahısı alındı', allReports.length > 0);
+  for (const { id: rid } of allReports) {
     const m = await call('GET', `/api/reports/${rid}/meta`, { cookie: sessions['100501'] });
     const r = await call('POST', `/api/reports/${rid}/run`, { cookie: sessions['100501'], body: { params: { tarix_bas: '2025-01-01', tarix_son: today } } });
     const o = await call('GET', `/api/reports/${rid}/options/filial`, { cookie: sessions['100501'] });
@@ -202,13 +211,13 @@ sec('Məlumat sızması və yetki (sütun, dəyər qaydası)');
       ok(`Yetkisiz istifadəçi hesabat ${rid}-ə çata bilmir`, false, `${m.status}/${r.status}/${o.status}`);
     }
   }
-  ok('Yetkisiz istifadəçi hesabat 1..12-yə çata bilmir', !fails.some((f) => f.startsWith('Yetkisiz istifadəçi hesabat')));
+  ok('Yetkisiz istifadəçi heç bir hesabata çata bilmir', !fails.some((f) => f.startsWith('Yetkisiz istifadəçi hesabat')));
   // parametrlə qaydanı aşmaq cəhdi
   const bypass = await call('POST', `/api/reports/${id}/run`, { cookie: sessions['100482'], body: { params: { tarix_bas: '2025-01-01', tarix_son: today, filial: 'SM' } } });
   const brows = bypass.json?.rows || [];
   ok('Filial parametri ilə yetki qaydası aşılmır (SM seçilsə də yalnız Bakı)', bypass.status === 200 && brows.every((r) => r[fi] === 'Bakı'));
   // id fuzz
-  for (const bad of ['abc', '1 OR 1=1', '-1', '99999999999999', '1;DROP TABLE x', '%00', '1.5', '', '0x1']) {
+  for (const bad of ['1', '2', '12', 'abc', '1 OR 1=1', '-1', '99999999999999', '1;DROP TABLE x', '%00', '1.5', '', '0x1']) {
     const r = await call('GET', `/api/reports/${encodeURIComponent(bad)}/meta`, { cookie: sessions['100482'] });
     ok(`Hesabat id fuzz «${bad}» → 4xx (500 yox)`, r.status >= 400 && r.status < 500, String(r.status));
   }
@@ -280,20 +289,64 @@ sec('Sessiyanın ləğvi');
   await call('POST', '/api/auth/logout', { cookie: l.cookie, body: {} });
   const me2 = await call('GET', '/api/me', { cookie: l.cookie });
   ok('Çıxışdan sonra köhnə token etibarsızdır', me2.status === 401, String(me2.status));
-  const pw = await call('PUT', '/api/admin/users/100359', { cookie: sessions['100001'], body: { password: 'yeniParol12345' } });
+  const pw = await call('PUT', `/api/admin/users/${U['100359']}`, { cookie: sessions['100001'], body: { password: 'yeniParol12345' } });
   ok('Admin parolu dəyişdi', pw.status === 200, String(pw.status));
   const l2 = await login('100359', 'yeniParol12345');
   const me3 = await call('GET', '/api/me', { cookie: l2.cookie });
   ok('Yeni parolla giriş', me3.status === 200);
-  await call('PUT', '/api/admin/users/100359', { cookie: sessions['100001'], body: { password: PW } });
+  await call('PUT', `/api/admin/users/${U['100359']}`, { cookie: sessions['100001'], body: { password: PW } });
   const me4 = await call('GET', '/api/me', { cookie: l2.cookie });
   ok('Parol dəyişəndə köhnə sessiya bağlanır', me4.status === 401, String(me4.status));
-  await call('PUT', '/api/admin/users/100359', { cookie: sessions['100001'], body: { active: false } });
+  await call('PUT', `/api/admin/users/${U['100359']}`, { cookie: sessions['100001'], body: { active: false } });
   const l3 = await login('100359');
   ok('Deaktiv istifadəçi girə bilmir', l3.r.status === 401, String(l3.r.status));
-  await call('PUT', '/api/admin/users/100359', { cookie: sessions['100001'], body: { active: true } });
-  const priv = await call('PUT', '/api/admin/users/100001', { cookie: sessions['100001'], body: { role: 'user' } });
+  await call('PUT', `/api/admin/users/${U['100359']}`, { cookie: sessions['100001'], body: { active: true } });
+  const priv = await call('PUT', `/api/admin/users/${U['100001']}`, { cookie: sessions['100001'], body: { role: 'user' } });
   ok('Admin öz admin rolunu götürə bilmir', priv.status === 400, String(priv.status));
+}
+
+// ---------- 11b. UUID: daxili nömrələr çöldən görünmür ----------
+sec('UUID (təxmin olunmayan ID-lər)');
+{
+  const A = sessions['100001'];
+  const reports = (await call('GET', '/api/admin/reports', { cookie: A })).json || [];
+  const cats = (await call('GET', '/api/admin/categories', { cookie: A })).json || [];
+  const sj = (await call('GET', '/api/admin/subjects', { cookie: A })).json || {};
+  const users = (await call('GET', '/api/admin/users', { cookie: A })).json || [];
+  const fresh = (await login('100317')).cookie; // əvvəlki test bu istifadəçinin sessiyalarını bağlamışdı
+  const mine = (await call('GET', '/api/reports', { cookie: fresh })).json || [];
+  const me = (await call('GET', '/api/me', { cookie: fresh })).json || {};
+  ok('Hesabat ID-ləri UUID-dir', reports.length > 0 && reports.every((r) => UUID.test(r.id)));
+  ok('Hesabatın kateqoriya ID-si UUID-dir', reports.every((r) => r.category_id === null || UUID.test(r.category_id)));
+  ok('Kateqoriya ID-ləri UUID-dir', cats.length > 0 && cats.every((c) => UUID.test(c.id)));
+  ok('Vəzifə ID-ləri (və üst vəzifə) UUID-dir', (sj.positions || []).length > 0 && sj.positions.every((p) => UUID.test(p.id) && (p.parent_id === null || UUID.test(p.parent_id))));
+  ok('Qrup ID-ləri UUID-dir', (sj.groups || []).every((g) => UUID.test(g.id)));
+  ok('İstifadəçi ID-ləri UUID-dir', users.length > 0 && users.every((u) => UUID.test(u.id) && (u.position_id === null || UUID.test(u.position_id)) && (u.groups || []).every((g) => UUID.test(g))));
+  ok('İstifadəçinin hesabat siyahısında ID-lər UUID-dir', mine.length > 0 && mine.every((r) => UUID.test(r.id) && (r.category_id === null || UUID.test(r.category_id))));
+  ok('/me UUID verir, daxili nömrə (position_id) yoxdur', UUID.test(me.id) && !('position_id' in me));
+  const all = [...reports, ...cats, ...(sj.positions || []), ...(sj.groups || []), ...users].map((x) => x.id);
+  ok('Bütün ID-lər bir-birindən fərqlidir', new Set(all).size === all.length);
+  const rep0 = await call('GET', `/api/admin/reports/${reports[0].id}`, { cookie: A });
+  ok('Hesabat detalında daxili nömrə yoxdur', rep0.status === 200 && UUID.test(rep0.json.id) && !('uid' in rep0.json) && (rep0.json.columns || []).every((c) => !('report_id' in c)));
+  const ov = await call('GET', `/api/admin/permissions/overview?subjectType=user&subjectId=${U['100317']}`, { cookie: A });
+  ok('Yetki icmalında hesabat ID-ləri UUID-dir', ov.status === 200 && ov.json.every((o) => UUID.test(o.report_id)));
+  // köhnə ardıcıl nömrələr və EMPID artıq işləmir
+  for (const [m, p] of [['GET', '/api/admin/reports/1'], ['GET', '/api/reports/1/meta'], ['PUT', `/api/admin/users/100317`], ['DELETE', '/api/admin/groups/1'], ['DELETE', '/api/admin/positions/1']]) {
+    const r = await call(m, p, { cookie: A, body: m === 'PUT' ? { name: 'x' } : undefined });
+    ok(`Ardıcıl nömrə/EMPID ilə ${m} ${p} → 404`, r.status === 404, String(r.status));
+  }
+  const ef = await call('GET', `/api/admin/effective?empid=100317&reportId=${reports[0].id}`, { cookie: A });
+  ok('/effective EMPID ilə işləmir', ef.status === 404, String(ef.status));
+  const ef2 = await call('GET', `/api/admin/effective?userId=${U['100317']}&reportId=${reports[0].id}`, { cookie: A });
+  ok('/effective UUID ilə işləyir', ef2.status === 200, String(ef2.status));
+  // başqa növün UUID-si qəbul olunmur (hesabat UUID-si istifadəçi yerinə)
+  const x = await call('PUT', `/api/admin/users/${reports[0].id}`, { cookie: A, body: { name: 'x' } });
+  ok('Hesabat UUID-si istifadəçi marşrutunda işləmir', x.status === 404, String(x.status));
+  // eyni UUID böyük hərflə də eyni obyektə çatır, SQL injection yoxdur
+  const up = await call('GET', `/api/admin/reports/${reports[0].id.toUpperCase()}`, { cookie: A });
+  ok('Böyük hərfli UUID səhv 500 vermir', up.status < 500, String(up.status));
+  const inj = await call('GET', `/api/admin/reports/${encodeURIComponent(reports[0].id + "' OR '1'='1")}`, { cookie: A });
+  ok('UUID-yə əlavə SQL → 404', inj.status === 404, String(inj.status));
 }
 
 // ---------- 12. Fayl və yol sızması ----------

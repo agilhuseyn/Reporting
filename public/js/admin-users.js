@@ -37,7 +37,7 @@ export async function adminUsers(root, me) {
         h('label', { class: 'fld' }, t('name'), inp('name')),
         h('label', { class: 'fld' }, u.isNew ? t('password') : t('newPassword'), inp('password', 'password'))),
       h('div', { class: 'row wrap gap16 end' },
-        h('label', { class: 'fld' }, t('position'), h('select', { class: 'inp', onchange: (e) => { u.position_id = e.target.value ? Number(e.target.value) : null; } },
+        h('label', { class: 'fld' }, t('position'), h('select', { class: 'inp', onchange: (e) => { u.position_id = e.target.value || null; } },
           h('option', { value: '' }, '—'), positions.map((p) => h('option', { value: p.id, selected: p.id === u.position_id }, p.name)))),
         isAdmin ? h('label', { class: 'fld' }, t('role'), h('select', { class: 'inp', onchange: (e) => { u.role = e.target.value; draw(); } },
           ['user', 'support', 'admin'].map((r) => h('option', { value: r, selected: r === u.role }, t(`role.${r}`))))) : null,
@@ -63,7 +63,7 @@ export async function adminUsers(root, me) {
       delete body.isNew;
       if (!body.password) delete body.password;
       if (edit.isNew) await api('/api/admin/users', { method: 'POST', body });
-      else await api(`/api/admin/users/${encodeURIComponent(edit.empid)}`, { method: 'PUT', body });
+      else await api(`/api/admin/users/${encodeURIComponent(edit.id)}`, { method: 'PUT', body });
       toast(t('saved'));
       edit = null;
       await load();
@@ -96,7 +96,7 @@ export async function adminUsers(root, me) {
       h('div', { class: 'pad row wrap gap10' }, name, parent, h('button', { class: 'btn primary', onclick: async () => {
         if (!name.value.trim()) return;
         try {
-          await api('/api/admin/positions', { method: 'POST', body: { name: name.value.trim(), parent_id: parent.value ? Number(parent.value) : null } });
+          await api('/api/admin/positions', { method: 'POST', body: { name: name.value.trim(), parent_id: parent.value || null } });
           await load();
           draw();
         } catch (e) { toast(e.message, 'err'); }

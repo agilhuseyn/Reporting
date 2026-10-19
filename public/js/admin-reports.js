@@ -173,7 +173,7 @@ export async function adminReports(root, me) {
       clear(main, h('div', { class: 'empty' }, t('pickReport')));
       return;
     }
-    const catSel = h('select', { class: 'inp', disabled: !canEdit, onchange: (e) => { rep.category_id = e.target.value ? Number(e.target.value) : null; } },
+    const catSel = h('select', { class: 'inp', disabled: !canEdit, onchange: (e) => { rep.category_id = e.target.value || null; } },
       h('option', { value: '' }, t('other')),
       cats.map((c) => h('option', { value: c.id, selected: c.id === rep.category_id }, label(c, 'name'))));
     clear(

@@ -48,14 +48,19 @@ export function resolveToken(v) {
 export async function reportsFor(empid) {
   const subjects = await subjectsFor(empid);
   const [t, i] = arrays(subjects);
+  // Çöldən yalnız UUID görünür; kateqoriya sırası daxili nömrə ilə saxlanır və cavaba düşmür
   const r = await pool.query(
-    `SELECT DISTINCT r.id, r.code, r.kind, r.name_az, r.name_en, r.name_ru, r.description,
-            c.id AS category_id, c.name_az AS cat_az, c.name_en AS cat_en, c.name_ru AS cat_ru
-     FROM portal.perm_report p
-     JOIN portal.reports r ON r.id = p.report_id AND r.active
-     LEFT JOIN portal.report_categories c ON c.id = r.category_id
-     WHERE (p.subject_type, p.subject_id) IN (SELECT * FROM unnest($1::text[], $2::text[]))
-     ORDER BY c.id NULLS LAST, r.name_az`, [t, i]);
+    `SELECT x.id, x.code, x.kind, x.name_az, x.name_en, x.name_ru, x.description,
+            x.category_id, x.cat_az, x.cat_en, x.cat_ru
+     FROM (
+       SELECT DISTINCT r.uid AS id, r.code, r.kind, r.name_az, r.name_en, r.name_ru, r.description,
+              c.uid AS category_id, c.name_az AS cat_az, c.name_en AS cat_en, c.name_ru AS cat_ru, c.id AS cat_ord
+       FROM portal.perm_report p
+       JOIN portal.reports r ON r.id = p.report_id AND r.active
+       LEFT JOIN portal.report_categories c ON c.id = r.category_id
+       WHERE (p.subject_type, p.subject_id) IN (SELECT * FROM unnest($1::text[], $2::text[]))
+     ) x
+     ORDER BY x.cat_ord NULLS LAST, x.name_az`, [t, i]);
   return r.rows;
 }
 
