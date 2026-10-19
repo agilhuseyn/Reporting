@@ -15,7 +15,8 @@ function cellText(col, v) {
 
 // Nəticə cədvəli: çeşidləmə, sütun filtri, axtarış, səhifələmə, sətir seçimi, kopyalama.
 // columns: [{code,label_*,type,masked}], rows: massiv massivi.
-export function resultTable({ columns: cols, rows, canExport, fileName, onExport }) {
+// drillColumn + onDrill: həmin sütunun dəyərinə basanda detal açılır (admin hesabatda təyin edir).
+export function resultTable({ columns: cols, rows, canExport, fileName, onExport, drillColumn, onDrill }) {
   // Hamısı tam ədəddirsə, onluq göstərmirik (say, say-sütunları)
   const columns = cols.map((c, ci) => {
     if (c.type !== 'number' || c.masked) return c;
@@ -119,7 +120,10 @@ export function resultTable({ columns: cols, rows, canExport, fileName, onExport
         columns.forEach((c, ci) => {
           const v = row[ci];
           if (c.masked) tr.append(h('td', { class: c.type === 'number' ? 'n' : '' }, h('span', { class: 'blur', 'aria-hidden': 'true' }, cellText(c, v))));
-          else tr.append(h('td', { class: c.type === 'number' ? 'n' : '' }, cellText(c, v)));
+          else if (drillColumn && onDrill && c.code === drillColumn && v !== null && v !== undefined) {
+            tr.append(h('td', { class: c.type === 'number' ? 'n' : '' },
+              h('button', { class: 'drill', type: 'button', title: t('drillOpen'), onclick: (e) => { e.stopPropagation(); onDrill(v, row); } }, cellText(c, v))));
+          } else tr.append(h('td', { class: c.type === 'number' ? 'n' : '' }, cellText(c, v)));
         });
         return tr;
       })

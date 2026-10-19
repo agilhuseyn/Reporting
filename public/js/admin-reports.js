@@ -4,7 +4,7 @@ import { t, label, fmtNum } from './i18n.js';
 
 const blank = () => ({
   id: null, code: '', name_az: '', name_en: '', name_ru: '', category_id: null, kind: 'query', description: '',
-  sql: '', params: [], columns: [], active: true, version: 0, versions: [],
+  sql: '', params: [], columns: [], active: true, version: 0, versions: [], drill: null,
 });
 
 export async function adminReports(root, me) {
@@ -19,6 +19,8 @@ export async function adminReports(root, me) {
   let rep = null;
   let testOut = null;
   const testVals = {};
+  let drillTest = null;
+  let drillVal = '';
 
   async function loadList() {
     [list, cats] = await Promise.all([api('/api/admin/reports'), api('/api/admin/categories')]);
@@ -118,8 +120,77 @@ export async function adminReports(root, me) {
     }
   }
 
+  const drillKeyType = () => rep.columns.find((c) => c.code === rep.drill?.column)?.type || 'text';
+
+  // Detal sütunları detal SQL-dən (və ya test nəticəsindən) götürülür; əvvəl yazılmış adlar saxlanır.
+  async function drillFind(silent) {
+    try {
+      const a = await api('/api/admin/reports/analyze', {
+        method: 'POST',
+        body: { sql: rep.drill.sql, known: rep.drill.columns, columns: drillTest && !drillTest.error ? drillTest.columns : null },
+      });
+      const old = Object.fromEntries(rep.drill.columns.map((c) => [c.code, c]));
+      rep.drill.columns = a.columns.map((c) => {
+        const o = old[c.code];
+        return o ? { ...o, src: c.src, type: c.type } : { code: c.code, src: c.src, label_az: c.label, label_en: c.label, label_ru: c.label, type: c.type };
+      });
+      if (!silent) {
+        drawEditor();
+        toast(t('columnsFound'));
+      }
+    } catch (e) {
+      if (!silent) toast(e.message, 'err');
+    }
+  }
+
+  async function drillExecTest() {
+    try {
+      drillTest = await api('/api/admin/reports/test', { method: 'POST', body: {
+        sql: rep.drill.sql, params: { ...testVals, deyer: drillVal },
+        types: { ...Object.fromEntries(rep.params.map((p) => [p.name, p.type])), deyer: drillKeyType() },
+      } });
+      if (!rep.drill.columns.length) await drillFind(true);
+    } catch (e) {
+      drillTest = { error: e.message };
+    }
+    drawEditor();
+  }
+
+  function drillCard() {
+    const d = rep.drill;
+    const dcol = (c) => {
+      const inp = (k) => h('input', { class: 'inp sm', value: c[k] || '', readOnly: !canEdit, oninput: (e) => { c[k] = e.target.value; } });
+      return h('tr', {}, isAdmin ? h('td', { class: 'mono' }, c.code) : null, h('td', {}, inp('label_az')), h('td', {}, inp('label_en')), h('td', {}, inp('label_ru')),
+        h('td', {}, h('select', { class: 'inp sm', disabled: !canEdit, onchange: (e) => { c.type = e.target.value; } },
+          ['text', 'number', 'date'].map((x) => h('option', { value: x, selected: x === c.type }, t(`ptype.${x}`))))));
+    };
+    return h('div', { class: 'card' },
+      h('div', { class: 'toolbar' }, h('b', {}, t('drillTitle')), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('drillHint'))),
+      h('div', { class: 'pad col gap12' },
+        h('label', { class: 'row gap8' }, h('input', { type: 'checkbox', checked: !!d, disabled: !canEdit, onchange: (e) => {
+          rep.drill = e.target.checked ? { column: rep.columns[0]?.code || '', sql: '', columns: [] } : null;
+          drillTest = null;
+          drawEditor();
+        } }), t('drillEnable')),
+        d ? h('div', { class: 'col gap12' },
+          field(t('drillColumn'), h('select', { class: 'inp', disabled: !canEdit, onchange: (e) => { d.column = e.target.value; } },
+            rep.columns.map((c) => h('option', { value: c.code, selected: c.code === d.column }, c.label_az || c.code)))),
+          field(t('drillSql'), h('textarea', { class: 'sql', spellcheck: 'false', readOnly: !canEdit, value: d.sql, oninput: (e) => { d.sql = e.target.value; } })),
+          canEdit ? h('div', { class: 'row wrap gap12 end' },
+            field(t('drillTestValue'), h('input', { class: 'inp', value: drillVal, oninput: (e) => { drillVal = e.target.value; } })),
+            h('button', { class: 'btn primary', onclick: drillExecTest }, t('test')),
+            h('button', { class: 'btn', onclick: () => drillFind(false) }, t('drillFind'))) : null,
+          drillTest ? previewTable(drillTest, () => drillFind(false)) : null,
+          d.columns.length ? h('div', { class: 'col gap6' },
+            h('b', {}, t('drillColumns')), h('div', { class: 'muted small' }, t('drillColumnsNote')),
+            h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
+              h('thead', {}, h('tr', {}, [...(isAdmin ? [t('code')] : []), 'AZ', 'EN', 'RU', t('type')].map((x) => h('th', {}, x)))),
+              h('tbody', {}, d.columns.map(dcol))))) : null) : null));
+  }
+
   async function save() {
     try {
+      if (rep.drill?.sql && !rep.drill.columns.length) await drillFind(true);
       await syncParams();
       const body = { ...rep };
       if (rep.id) await api(`/api/admin/reports/${rep.id}`, { method: 'PUT', body });
@@ -157,7 +228,7 @@ export async function adminReports(root, me) {
         ['normal', 'sensitive'].map((x) => h('option', { value: x, selected: x === c.sensitivity }, t(`sens.${x}`))))));
   }
 
-  function previewTable(out) {
+  function previewTable(out, onUse = mergeColumns) {
     if (out.error) return h('div', { class: 'err' }, out.error);
     return h('div', { class: 'col gap8' },
       h('div', { class: 'muted small' }, `${out.rows.length} ${t('rowsWord')} · ${(out.ms / 1000).toFixed(2)} ${t('sec')}`),
@@ -165,7 +236,7 @@ export async function adminReports(root, me) {
         h('thead', {}, h('tr', {}, out.columns.map((c) => h('th', {}, c.code)))),
         h('tbody', {}, out.rows.slice(0, 20).map((r) => h('tr', {}, out.columns.map((c, i) => h('td', { class: c.type === 'number' ? 'n' : '' },
           r[i] === null ? '' : c.type === 'number' ? fmtNum(r[i]) : String(r[i]))))))),
-      h('div', {}, canEdit ? h('button', { class: 'btn', onclick: mergeColumns }, t('useColumns')) : null)));
+      h('div', {}, canEdit ? h('button', { class: 'btn', onclick: onUse }, t('useColumns')) : null)));
   }
 
   function drawEditor() {
@@ -225,6 +296,7 @@ export async function adminReports(root, me) {
               h('thead', {}, h('tr', {}, [...(isAdmin ? [t('code'), t('srcName')] : []), 'AZ', 'EN', 'RU', t('type'), t('sensitivity')].map((x) => h('th', {}, x)))),
               h('tbody', {}, rep.columns.map(columnRow))))
           : h('div', { class: 'note' }, t('noColumns'))),
+      drillCard(),
       rep.versions?.length ? h('div', { class: 'card pad' },
         h('b', {}, t('versions')),
         h('div', { class: 'col gap6 mt8' }, rep.versions.map((v) => h('div', { class: 'small' },

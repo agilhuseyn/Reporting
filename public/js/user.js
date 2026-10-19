@@ -76,6 +76,7 @@ export async function userPage(root, reportId) {
   const paramsBox = h('div', { class: 'card pad row wrap gap16 end' });
   const resultBox = h('div', { class: 'col gap12' });
   let result = null;
+  let usedParams = {}; // nəticənin alındığı parametrlər (detal eyni parametrlərlə açılır)
   let mode = 'table';
   let running = false;
 
@@ -119,6 +120,7 @@ export async function userPage(root, reportId) {
       ? resultTable({
           columns: result.columns, rows: result.rows, canExport: result.canExport, fileName: label(meta, 'name'),
           onExport: (n) => api(`/api/reports/${id}/export-log`, { method: 'POST', body: { rows: n } }).catch(() => {}),
+          drillColumn: meta.drill?.column, onDrill: openDetail,
         }).el
       : pivotView({ columns: result.columns, rows: result.rows });
     clear(
@@ -129,6 +131,29 @@ export async function userPage(root, reportId) {
     );
   }
 
+  // Detal pəncərəsi: basılan dəyər serverə göndərilir, server həmin sətrin sizə görünən olduğunu yoxlayır.
+  async function openDetail(key) {
+    const body = h('div', { class: 'modal-body' }, h('div', { class: 'empty' }, t('running')));
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const col = result.columns.find((c) => c.code === meta.drill.column);
+    const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+      h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+        h('div', { class: 'toolbar' }, h('b', {}, `${col ? label(col, 'label') : ''}: ${key}`), h('div', { class: 'grow' }),
+          h('button', { class: 'btn sm', onclick: close }, t('close'))),
+        body));
+    document.body.append(overlay);
+    document.addEventListener('keydown', onKey);
+    try {
+      const d = await api(`/api/reports/${id}/detail`, { method: 'POST', body: { key, params: usedParams } });
+      clear(body, h('div', { class: 'muted small pad' }, `${fmtNum(d.rows.length, 0)} ${t('rowsWord')} · ${(d.ms / 1000).toFixed(2)} ${t('sec')}`),
+        d.truncated ? h('div', { class: 'warn' }, t('truncated')) : null,
+        resultTable({ columns: d.columns, rows: d.rows, canExport: false, fileName: label(meta, 'name') }).el);
+    } catch (e) {
+      clear(body, h('div', { class: 'err' }, e.message));
+    }
+  }
+
   async function run() {
     if (running) return;
     running = true;
@@ -136,6 +161,7 @@ export async function userPage(root, reportId) {
     clear(resultBox, h('div', { class: 'empty' }, t('running')));
     try {
       result = await api(`/api/reports/${id}/run`, { method: 'POST', body: { params: values } });
+      usedParams = { ...values };
       drawResult();
     } catch (e) {
       result = null;

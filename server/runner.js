@@ -147,7 +147,66 @@ export async function runForUser(empid, report, params) {
   }
 }
 
-async function runForUserInner(empid, report, params) {
+// SQL-i sütun/qayda sarğısı ilə icra edir (hər iki baza üçün). Nəticə: sətirlər (maskalanmamış).
+async function execWrapped({ src, sql: rawSql, kind, vis, rules, rcols, values, types, maxRows }) {
+  if (src.dialect === 'mssql') {
+    const inner = guardMssql(rawSql, kind);
+    const inputs = mssqlInputs(inner, values, types);
+    if (canWrap(inner, kind)) {
+      const { sql, extra } = buildWrapped({ inner, vis, rules, rcols, top: maxRows + 1, resolve: resolveToken });
+      return (await execMssql(src, sql, [...inputs, ...extra])).rows;
+    }
+    const raw = await execMssql(src, inner, inputs);
+    return applyJs({
+      cols: raw.cols.map((c) => c.code), rows: raw.rows, vis, rules, rcols, resolve: resolveToken, max: maxRows,
+    });
+  }
+  const inner = guardSql(rawSql);
+  const { text, args } = bindParams(inner, values, types);
+  const where = [];
+  for (const r of rules) {
+    if (!IDENT.test(r.column)) throw new HttpError(500, 'Yanlış qayda sütunu');
+    const rc = rcols.find((c) => c.code === r.column);
+    if (!rc) throw new HttpError(500, `Qayda sütunu hesabatda yoxdur: ${r.column}`);
+    const col = pgq(rc.src || rc.code);
+    const raw = Array.isArray(r.value) ? r.value.map(resolveToken) : resolveToken(r.value);
+    if (r.op === 'in') {
+      args.push([].concat(raw).map(String));
+      where.push(`${col}::text = ANY($${args.length}::text[])`);
+    } else if (r.op === 'eq') {
+      args.push(String(raw));
+      where.push(`${col}::text = $${args.length}`);
+    } else {
+      const cast = rc.type === 'number' ? '::numeric' : rc.type === 'date' ? '::date' : '';
+      args.push(String(raw));
+      const lhs = cast ? col : `${col}::text`;
+      where.push(`${lhs} ${r.op === 'gte' ? '>=' : '<='} $${args.length}${cast}`);
+    }
+  }
+  const select = vis
+    .map((c) => {
+      if (!IDENT.test(c.code)) throw new HttpError(500, 'Yanlış sütun kodu');
+      const from = pgq(c.src || c.code);
+      return c.masked ? `length(${from}::text) AS "${c.code}"` : `${from} AS "${c.code}"`;
+    })
+    .join(', ');
+  const sql = `SELECT ${select} FROM (${text}) AS r${where.length ? ' WHERE ' + where.join(' AND ') : ''} LIMIT ${maxRows + 1}`;
+  return (await execPg(src, { text: sql, values: args })).rows;
+}
+
+const colInfo = (vis) => vis.map((c) => ({
+  code: c.code, label_az: c.label_az, label_en: c.label_en, label_ru: c.label_ru, type: c.type, masked: c.masked,
+}));
+
+function maskRows(rows, vis) {
+  vis.forEach((c, idx) => {
+    if (!c.masked) return;
+    for (const row of rows) row[idx] = row[idx] == null ? null : filler(row[idx], c.type);
+  });
+}
+
+async function runForUserInner(empid, report, params, opts = {}) {
+  const maxRows = opts.maxRows ?? MAX_ROWS;
   const perm = await effective(empid, report.id);
   if (!perm.allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
   const rcols = (
@@ -156,72 +215,69 @@ async function runForUserInner(empid, report, params) {
   const vis = visibleColumns(perm, rcols);
   if (!vis.length) throw new HttpError(403, 'Heç bir sütuna yetkiniz yoxdur');
   const src = await getSqlSource();
-  const types = paramTypes(report.params);
   const t0 = Date.now();
-  let rows;
+  let rows = await execWrapped({
+    src, sql: report.sql, kind: report.kind, vis, rules: [...perm.rules, ...(opts.extraRules || [])], rcols,
+    values: params, types: paramTypes(report.params), maxRows,
+  });
 
-  if (src.dialect === 'mssql') {
-    const inner = guardMssql(report.sql, report.kind);
-    const inputs = mssqlInputs(inner, params, types);
-    if (canWrap(inner, report.kind)) {
-      const { sql, extra } = buildWrapped({ inner, vis, rules: perm.rules, rcols, top: MAX_ROWS + 1, resolve: resolveToken });
-      rows = (await execMssql(src, sql, [...inputs, ...extra])).rows;
-    } else {
-      const raw = await execMssql(src, inner, inputs);
-      rows = applyJs({
-        cols: raw.cols.map((c) => c.code), rows: raw.rows, vis, rules: perm.rules, rcols, resolve: resolveToken, max: MAX_ROWS,
-      });
-    }
-  } else {
-    const inner = guardSql(report.sql);
-    const { text, args } = bindParams(inner, params, types);
-    const where = [];
-    for (const r of perm.rules) {
-      if (!IDENT.test(r.column)) throw new HttpError(500, 'Yanlış qayda sütunu');
-      const rc = rcols.find((c) => c.code === r.column);
-      if (!rc) throw new HttpError(500, `Qayda sütunu hesabatda yoxdur: ${r.column}`);
-      const col = pgq(rc.src || rc.code);
-      const raw = Array.isArray(r.value) ? r.value.map(resolveToken) : resolveToken(r.value);
-      if (r.op === 'in') {
-        args.push([].concat(raw).map(String));
-        where.push(`${col}::text = ANY($${args.length}::text[])`);
-      } else if (r.op === 'eq') {
-        args.push(String(raw));
-        where.push(`${col}::text = $${args.length}`);
-      } else {
-        const cast = rc.type === 'number' ? '::numeric' : rc.type === 'date' ? '::date' : '';
-        args.push(String(raw));
-        const lhs = cast ? col : `${col}::text`;
-        where.push(`${lhs} ${r.op === 'gte' ? '>=' : '<='} $${args.length}${cast}`);
-      }
-    }
-    const select = vis
-      .map((c) => {
-        if (!IDENT.test(c.code)) throw new HttpError(500, 'Yanlış sütun kodu');
-        const from = pgq(c.src || c.code);
-        return c.masked ? `length(${from}::text) AS "${c.code}"` : `${from} AS "${c.code}"`;
-      })
-      .join(', ');
-    const sql = `SELECT ${select} FROM (${text}) AS r${where.length ? ' WHERE ' + where.join(' AND ') : ''} LIMIT ${MAX_ROWS + 1}`;
-    rows = (await execPg(src, { text: sql, values: args })).rows;
+  const truncated = rows.length > maxRows;
+  if (truncated) rows = rows.slice(0, maxRows);
+  maskRows(rows, vis);
+  return { columns: colInfo(vis), rows, truncated, ms: Date.now() - t0, canExport: perm.canExport };
+}
+
+// Detal (hesabatın ikinci SQL-i): əsas hesabata yetkisi olan istifadəçi üçün açılır.
+// 1) Basılan dəyər istifadəçinin həmin hesabatda görə bildiyi sətirdən olmalıdır (yetki qaydaları və parametrlər daxil).
+// 2) Əsas hesabatda gizli/maskalı olan sütunla eyni kodlu detal sütunu da gizli/maskalı olur.
+export async function runDetailForUser(empid, report, params, key) {
+  try {
+    return await runDetailInner(empid, report, params, key);
+  } catch (e) {
+    throw userSafe(e, report);
   }
+}
 
+async function runDetailInner(empid, report, params, key) {
+  const drill = report.drill;
+  if (!drill?.sql || !drill.column) throw new HttpError(404, 'Detal yoxdur');
+  if (typeof key !== 'string' && typeof key !== 'number') throw new HttpError(400, 'Dəyər yanlışdır');
+  const keyStr = String(key);
+  if (!keyStr || keyStr.length > 200) throw new HttpError(400, 'Dəyər yanlışdır');
+  const perm = await effective(empid, report.id);
+  if (!perm.allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
+  const rcols = (
+    await pool.query('SELECT * FROM portal.report_columns WHERE report_id = $1 ORDER BY pos, code', [report.id])
+  ).rows;
+  const keyCol = visibleColumns(perm, rcols).find((c) => c.code === drill.column);
+  if (!keyCol || keyCol.masked) throw new HttpError(403, 'Bu sütun üçün detal açıq deyil');
+
+  // Basılan dəyər əsas hesabatda bu istifadəçiyə görünən sətirdən gəlirmi?
+  const seen = await runForUserInner(empid, report, params, {
+    maxRows: 1, extraRules: [{ column: drill.column, op: 'eq', value: keyStr, subject: { type: 'user', id: empid } }],
+  });
+  if (!seen.rows.length) throw new HttpError(404, 'Tapılmadı');
+
+  const dcols = (drill.columns || []).map((c) => ({ ...c, masked: false }));
+  const vis = dcols
+    .map((c) => {
+      if (!rcols.some((x) => x.code === c.code)) return c;
+      const mode = perm.columns[c.code];
+      return mode === 'show' ? c : mode === 'mask' ? { ...c, masked: true } : null;
+    })
+    .filter(Boolean);
+  if (!vis.length) throw new HttpError(403, 'Heç bir sütuna yetkiniz yoxdur');
+  const rules = perm.rules.filter((r) => dcols.some((c) => c.code === r.column));
+  const src = await getSqlSource();
+  const t0 = Date.now();
+  let rows = await execWrapped({
+    src, sql: drill.sql, kind: 'query', vis, rules, rcols: dcols,
+    values: { ...params, deyer: keyStr }, types: { ...paramTypes(report.params), deyer: keyCol.type }, maxRows: MAX_ROWS,
+  });
   const truncated = rows.length > MAX_ROWS;
   if (truncated) rows = rows.slice(0, MAX_ROWS);
-  vis.forEach((c, idx) => {
-    if (!c.masked) return;
-    for (const row of rows) row[idx] = row[idx] == null ? null : filler(row[idx], c.type);
-  });
-  return {
-    columns: vis.map((c) => ({
-      code: c.code, label_az: c.label_az, label_en: c.label_en, label_ru: c.label_ru,
-      type: c.type, masked: c.masked,
-    })),
-    rows,
-    truncated,
-    ms: Date.now() - t0,
-    canExport: perm.canExport,
-  };
+  maskRows(rows, vis);
+  return { columns: colInfo(vis), rows, truncated, ms: Date.now() - t0, canExport: perm.canExport };
 }
 
 // Admin testi: bütün sütunlar, 200 sətrə qədər.

@@ -8,7 +8,7 @@ import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } fro
 import { testAd } from './ldap.js';
 import { analyze, slug } from './sqlparse.js';
 import { keyOf, keyOrNull, keysOf } from './ids.js';
-import { runForUser, runTest, runOptions, detectParams, guardAuto, HttpError } from './runner.js';
+import { runForUser, runDetailForUser, runTest, runOptions, detectParams, guardAuto, HttpError } from './runner.js';
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 export const api = express.Router();
@@ -47,6 +47,7 @@ api.get('/reports/:id/meta', wrap(async (req, res) => {
     columns: vis.map((c) => ({
       code: c.code, label_az: c.label_az, label_en: c.label_en, label_ru: c.label_ru, type: c.type, masked: c.masked,
     })),
+    drill: report.drill?.sql && vis.some((c) => c.code === report.drill.column && !c.masked) ? { column: report.drill.column } : null,
     hiddenCount: rcols.length - vis.length,
     restricted: perm.rules.length > 0,
     canExport: perm.canExport,
@@ -72,8 +73,8 @@ const runLimiter = makeLimiter({ windowMs: 60_000, max: Number(process.env.RUN_R
 const runGate = makeGate({ max: Number(process.env.RUN_CONCURRENCY) || 4, maxQueue: 500, waitMs: 30_000 });
 const userActive = new Map();
 
-api.post('/reports/:id/run', wrap(async (req, res) => {
-  const report = await loadReport(req.params.id);
+// İcra üçün ortaq qayda: yetki əvvəl, parametr yoxlaması, sürət və paralel limit.
+async function limitedRun(req, report, fn) {
   // Yetki ilk yoxlanır: yetkisiz istifadəçi hesabatın parametrlərini belə görməsin
   if (!(await effective(req.user.empid, report.id)).allowed) throw new HttpError(403, 'Bu hesabata yetkiniz yoxdur');
   const given = req.body?.params || {};
@@ -93,12 +94,28 @@ api.post('/reports/:id/run', wrap(async (req, res) => {
   userActive.set(req.user.empid, (userActive.get(req.user.empid) || 0) + 1);
   let out;
   try {
-    out = await runGate.run(() => runForUser(req.user.empid, report, params));
+    out = await runGate.run(() => fn(params));
   } finally {
     const n = (userActive.get(req.user.empid) || 1) - 1;
     if (n <= 0) userActive.delete(req.user.empid); else userActive.set(req.user.empid, n);
   }
+  return { out, params };
+}
+
+api.post('/reports/:id/run', wrap(async (req, res) => {
+  const report = await loadReport(req.params.id);
+  const { out, params } = await limitedRun(req, report, (p) => runForUser(req.user.empid, report, p));
   await audit(req.user.empid, 'run', { report: report.code, rows: out.rows.length, ms: out.ms, params });
+  res.json(out);
+}));
+
+// Detal pəncərəsi: basılan dəyər + əsas hesabatın parametrləri
+api.post('/reports/:id/detail', wrap(async (req, res) => {
+  const report = await loadReport(req.params.id);
+  if (!report.drill?.sql) throw new HttpError(404, 'Detal yoxdur');
+  const key = req.body?.key;
+  const { out, params } = await limitedRun(req, report, (p) => runDetailForUser(req.user.empid, report, p, key));
+  await audit(req.user.empid, 'detail', { report: report.code, rows: out.rows.length, ms: out.ms, key: String(key).slice(0, 100), params });
   res.json(out);
 }));
 
@@ -168,6 +185,35 @@ admin.post('/reports/test', needCap('reports'), wrap(async (req, res) => {
   res.json(out);
 }));
 
+// Detal (ikinci SQL) sazlaması. Boşdursa null. Yalnız bilinən sahələr saxlanır.
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const clip = (v, n) => String(v ?? '').slice(0, n);
+async function cleanDrill(d, mainCodes, params) {
+  if (!d || !String(d.sql || '').trim()) return null;
+  if (!mainCodes.includes(d.column)) throw new HttpError(400, 'Detal üçün basılan sütun seçilməyib');
+  await guardAuto(d.sql, 'query');
+  const known = new Set((params || []).map((p) => p.name));
+  for (const n of detectParams(d.sql)) {
+    if (n !== 'deyer' && !known.has(n)) throw new HttpError(400, `Detal SQL-də naməlum parametr: @${n}`);
+  }
+  const cols = (Array.isArray(d.columns) ? d.columns : []).slice(0, 80);
+  if (!cols.length) throw new HttpError(400, 'Detal sütunları tapılmayıb. "Sütunları götür" düyməsini basın.');
+  const seen = new Set();
+  return {
+    column: d.column,
+    sql: String(d.sql),
+    columns: cols.map((c) => {
+      if (!IDENT_RE.test(String(c.code || '')) || seen.has(c.code)) throw new HttpError(400, `Yanlış detal sütun kodu: ${clip(c.code, 40)}`);
+      seen.add(c.code);
+      return {
+        code: c.code, src: c.src ? clip(c.src, 200) : null,
+        label_az: clip(c.label_az || c.code, 200), label_en: clip(c.label_en || c.label_az || c.code, 200),
+        label_ru: clip(c.label_ru || c.label_az || c.code, 200), type: ['text', 'number', 'date'].includes(c.type) ? c.type : 'text',
+      };
+    }),
+  };
+}
+
 async function saveColumns(client, reportId, columns) {
   const codes = columns.map((c) => c.code);
   for (const c of codes) {
@@ -196,14 +242,15 @@ admin.post('/reports', needCap('reports'), wrap(async (req, res) => {
   for (let i = 2; (await pool.query('SELECT 1 FROM portal.reports WHERE code = $1', [code])).rowCount; i++) code = `${baseCode}_${i}`;
   await guardAuto(b.sql, b.kind || 'query');
   const categoryKey = await keyOrNull('category', b.category_id);
+  const drill = await cleanDrill(b.drill, (b.columns || []).map((c) => c.code), b.params);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const r = await client.query(
-      `INSERT INTO portal.reports (code,category_id,kind,name_az,name_en,name_ru,description,sql,params,updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, uid`,
+      `INSERT INTO portal.reports (code,category_id,kind,name_az,name_en,name_ru,description,sql,params,updated_by,drill)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id, uid`,
       [code, categoryKey, b.kind || 'query', b.name_az, b.name_en || b.name_az, b.name_ru || b.name_az,
-        b.description || '', b.sql, JSON.stringify(b.params || []), req.user.empid]);
+        b.description || '', b.sql, JSON.stringify(b.params || []), req.user.empid, drill ? JSON.stringify(drill) : null]);
     const id = r.rows[0].id;
     await client.query('INSERT INTO portal.report_versions (report_id,version,sql,changed_by) VALUES ($1,1,$2,$3)',
       [id, b.sql, req.user.empid]);
@@ -225,6 +272,11 @@ admin.put('/reports/:id', needCap('reports'), wrap(async (req, res) => {
   const b = req.body || {};
   await guardAuto(b.sql, b.kind || 'query');
   const categoryKey = await keyOrNull('category', b.category_id);
+  const mainCodes = Array.isArray(b.columns)
+    ? b.columns.map((c) => c.code)
+    : (await pool.query('SELECT code FROM portal.report_columns WHERE report_id = $1', [key])).rows.map((r) => r.code);
+  const setDrill = b.drill !== undefined; // göndərilməyibsə mövcud detal toxunulmaz qalır
+  const drill = setDrill ? await cleanDrill(b.drill, mainCodes, b.params) : null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -234,10 +286,11 @@ admin.put('/reports/:id', needCap('reports'), wrap(async (req, res) => {
     const version = changed ? cur.version + 1 : cur.version;
     await client.query(
       `UPDATE portal.reports SET category_id=$2, kind=$3, name_az=$4, name_en=$5, name_ru=$6, description=$7,
-         sql=$8, params=$9, active=$10, version=$11, updated_by=$12, updated_at=now() WHERE id=$1`,
+         sql=$8, params=$9, active=$10, version=$11, updated_by=$12, updated_at=now(),
+         drill = CASE WHEN $13::boolean THEN $14::jsonb ELSE drill END WHERE id=$1`,
       [cur.id, categoryKey, b.kind || cur.kind, b.name_az || cur.name_az, b.name_en || b.name_az,
         b.name_ru || b.name_az, b.description ?? '', b.sql, JSON.stringify(b.params || []), b.active !== false,
-        version, req.user.empid]);
+        version, req.user.empid, setDrill, drill ? JSON.stringify(drill) : null]);
     if (changed) {
       await client.query('INSERT INTO portal.report_versions (report_id,version,sql,changed_by) VALUES ($1,$2,$3,$4)',
         [cur.id, version, b.sql, req.user.empid]);
