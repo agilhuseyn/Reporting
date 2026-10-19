@@ -2,6 +2,7 @@ import pg from 'pg';
 import { pool, reportPool } from './db.js';
 import { HttpError } from './errors.js';
 import { encrypt, decrypt } from './secret.js';
+import { baseFromDomain } from './ldap.js';
 
 const KINDS = ['sql', 'ldap'];
 
@@ -44,16 +45,18 @@ export function cleanConfig(kind, c = {}) {
     if (!database || !user) throw new HttpError(400, 'Baza və istifadəçi adı məcburidir');
     return { type, authType, domain, host, port, database, user, encrypt: !!c.encrypt, trustServerCertificate: !!c.trustServerCertificate, ssl: !!c.ssl };
   }
-  const url = str(c.url, 255);
-  if (!/^ldaps?:\/\/[^\s]+$/i.test(url)) throw new HttpError(400, 'LDAP ünvanı ldap:// və ya ldaps:// ilə başlamalıdır');
-  const userFilter = str(c.userFilter, 500) || '(sAMAccountName={login})';
-  if (!userFilter.includes('{login}')) throw new HttpError(400, 'Axtarış filtrində {login} olmalıdır');
-  const baseDn = str(c.baseDn, 500);
-  if (!baseDn) throw new HttpError(400, 'Base DN məcburidir');
-  return {
-    url, baseDn, bindDn: str(c.bindDn, 500), userFilter, empidAttr: str(c.empidAttr, 100),
-    startTls: !!c.startTls, tlsReject: c.tlsReject !== false,
-  };
+  // Active Directory (LDAP protokolu). Servis hesabı lazım deyil.
+  const host = str(c.host, 255);
+  if (!/^[A-Za-z0-9._-]+$/.test(host)) throw new HttpError(400, 'AD serveri (host) yanlışdır');
+  const ssl = !!c.ssl;
+  const port = Number(c.port) || (ssl ? 636 : 389);
+  if (!(port >= 1 && port <= 65535)) throw new HttpError(400, 'Port yanlışdır');
+  const domain = str(c.domain, 255);
+  if (!/^[A-Za-z0-9._-]+$/.test(domain)) throw new HttpError(400, 'Domen yazın (məs. company.local)');
+  const empidAttr = str(c.empidAttr, 100);
+  const baseDn = str(c.baseDn, 500) || baseFromDomain(domain);
+  if (empidAttr && !baseDn) throw new HttpError(400, 'Base DN yazın (məs. DC=company,DC=local)');
+  return { host, port, ssl, domain, baseDn, empidAttr, startTls: !!c.startTls, tlsReject: c.tlsReject !== false };
 }
 
 export async function saveConn(kind, config, password, enabled, by) {

@@ -4,7 +4,7 @@ import { pool } from './db.js';
 import { login, logout, requireAuth, needCap, needAdmin, audit, publicUser, ALL_CAPS } from './auth.js';
 import { reportsFor, effective, visibleColumns } from './perms.js';
 import { publicConns, loadConn, saveConn, deleteConn, cleanConfig, testSql } from './connections.js';
-import { testLdap } from './ldap.js';
+import { testAd } from './ldap.js';
 import { analyze, slug } from './sqlparse.js';
 import { runForUser, runTest, runOptions, detectParams, guardAuto, HttpError } from './runner.js';
 
@@ -430,7 +430,7 @@ async function testConn(kind, body) {
   const stored = await loadConn(kind).catch(() => null);
   const password = body?.password || stored?.password || '';
   if (kind === 'sql') return { config, password, result: await testSql(config, password) };
-  return { config, password, result: await testLdap(config, password, String(body?.testLogin || '').trim(), String(body?.testPassword || '')) };
+  return { config, password, result: await testAd(config, String(body?.testLogin || '').trim(), String(body?.testPassword || '')) };
 }
 
 admin.get('/connections', needAdmin, wrap(async (_req, res) => res.json(await publicConns())));
@@ -455,7 +455,7 @@ admin.put('/connections/:kind', needAdmin, wrap(async (req, res) => {
   const { config, password, result } = await testConn(kind, req.body);
   if (enabled && !result.ok) throw new HttpError(400, 'Test uğursuzdur, aktiv etmək olmaz. Əvvəlcə "Test" edin.');
   await saveConn(kind, config, req.body?.password || '', enabled, req.user.empid);
-  await audit(req.user.empid, 'conn_save', { kind, enabled, host: config.host || config.url });
+  await audit(req.user.empid, 'conn_save', { kind, enabled, host: config.host });
   void password;
   res.json({ ok: true, warnings: result.warnings || [] });
 }));

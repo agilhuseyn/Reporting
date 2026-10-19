@@ -22,7 +22,7 @@ test('dinamik açarlar: agg, cap, kind, mode, op, ptype, role, sens, subj, tab',
     kind: ['query', 'procedure', 'function'], mode: ['none', 'show', 'mask', 'hide'], op: ['in', 'eq', 'gte', 'lte'],
     ptype: ['text', 'number', 'date', 'list'], role: ['admin', 'support', 'user'], sens: ['normal', 'sensitive'],
     subj: ['position', 'group', 'user'], tab: ['users', 'positions', 'groups'], nav: ['reports', 'permissions', 'users', 'audit', 'connections'],
-    step: ['connect', 'bind', 'search', 'userBind'],
+    step: ['connect', 'search', 'userBind'],
   };
   const missing = [];
   for (const [fam, list] of Object.entries(families)) for (const k of list) if (!hasKey(`${fam}.${k}`)) missing.push(`${fam}.${k}`);

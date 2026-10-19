@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
 import { HttpError } from './errors.js';
 import { loadConn } from './connections.js';
-import { ldapFindUser, ldapVerify } from './ldap.js';
+import { adSignIn } from './ldap.js';
 
 let secret = process.env.JWT_SECRET;
 if (!secret) {
@@ -14,7 +14,7 @@ if (!secret) {
 
 export const ALL_CAPS = ['reports', 'permissions', 'users', 'audit'];
 
-// Giriş provayderi. LDAP aktivdirsə: LDAP ad + parol. Deyilsə: lokal parol.
+// Giriş provayderi. Active Directory aktivdirsə: domen adı + parol. Deyilsə: lokal parol.
 // İstifadəçilər həmişə sistemdən (portal.users) gəlir, LDAP yalnız parolu yoxlayır.
 // Admin hesabı LDAP düşəndə girə bilsin deyə lokal parolla da girə bilir.
 async function localUser(empid) {
@@ -27,9 +27,8 @@ async function verifyCredentials(login, password) {
   if (ldap?.enabled) {
     const local = await localUser(login);
     if (local?.role === 'admin' && local.password_hash && (await bcrypt.compare(password, local.password_hash))) return local;
-    const found = await ldapFindUser(ldap.config, ldap.password, login);
+    const found = await adSignIn(ldap.config, login, password);
     if (!found?.empid) return null;
-    if (!(await ldapVerify(ldap.config, found.dn, password))) return null;
     const u = await localUser(found.empid);
     if (!u) throw new HttpError(403, 'Bu istifadəçi portalda qeydiyyatda deyil');
     return u;

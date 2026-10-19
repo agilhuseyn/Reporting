@@ -43,9 +43,9 @@ ALTER ROLE report_ro SET search_path = demo;
 ## Bağlantılar tabı (yalnız admin)
 **Admin → Bağlantılar** ekranında:
 - **SQL bazası**: MSSQL və ya PostgreSQL. Server, port, baza, istifadəçi, parol yazıb **Test et** basın. Test yazma/admin hüququ olan hesabı xəbərdar edir. Test keçməsə, aktiv etmək olmur. Aktiv edilməsə, daxili test bazası işləyir.
-- **LDAP**: ünvan, Base DN, servis hesabı, axtarış filtri (`{login}` yeri). EMPID atributu boşdursa, daxil edilən ad EMPID sayılır. Test üçün istifadəçi adı və parolu yaza bilərsiniz.
+- **Active Directory**: AD serveri (Domain Controller), port (LDAPS 636 və ya 389), domen (məs. `company.local`). Servis hesabı lazım deyil: istifadəçi öz Windows adı və parolu ilə qoşulur. EMPID atributu (məs. `employeeID`) boşdursa, daxil edilən ad EMPID sayılır. Aktiv etmək üçün test istifadəçi adı və parolu ilə test keçməlidir.
 - Parollar bazada AES-256-GCM ilə şifrələnir. Açar: `CONN_SECRET` (yoxdursa `JWT_SECRET`). Açarı dəyişsəniz, parolları yenidən yazın.
-- LDAP aktivdirsə, istifadəçilər yenə də portalda (EMPID ilə) qeydiyyatda olmalıdır. LDAP yalnız parolu yoxlayır. Admin hesabı LDAP düşəndə lokal parolla girə bilir.
+- AD aktivdirsə, istifadəçilər yenə də portalda (EMPID ilə) qeydiyyatda olmalıdır. AD yalnız parolu yoxlayır. Admin hesabı AD düşəndə lokal parolla girə bilir.
 
 ### MSSQL qaydaları
 - Parametr `@ad` olduğu kimi qalır. Tarix `YYYYMMDD` kimi göndərilir.

@@ -3,7 +3,7 @@ import { api } from './api.js';
 import { t } from './i18n.js';
 
 const SQL_DEFAULT = { type: 'mssql', authType: 'sql', domain: '', host: '', port: 1433, database: '', user: '', encrypt: true, trustServerCertificate: false, ssl: false };
-const LDAP_DEFAULT = { url: 'ldaps://', baseDn: '', bindDn: '', userFilter: '(sAMAccountName={login})', empidAttr: '', startTls: false, tlsReject: true };
+const LDAP_DEFAULT = { host: '', port: 636, ssl: true, domain: '', baseDn: '', empidAttr: '', startTls: false, tlsReject: true };
 
 export async function adminConnections(root) {
   const main = h('main', { class: 'content col gap16' });
@@ -129,15 +129,19 @@ export async function adminConnections(root) {
         h('span', { class: 'tag' }, data.ldap?.enabled ? t('conn.ldapOn') : t('conn.ldapOff'))),
       h('div', { class: 'note' }, t('conn.ldapHelp')),
       h('div', { class: 'row wrap gap12 end' },
-        field(t('conn.url'), txt('ldap', 'url', { placeholder: 'ldaps://dc01.company.local:636' }), true),
-        field(t('conn.baseDn'), txt('ldap', 'baseDn', { placeholder: 'DC=company,DC=local' }), true)),
+        field(t('conn.adHost'), txt('ldap', 'host', { placeholder: 'dc01.company.local' }), true),
+        field(t('conn.port'), txt('ldap', 'port', { type: 'number', number: true })),
+        field(t('conn.domain'), txt('ldap', 'domain', { placeholder: 'company.local' }), true)),
       h('div', { class: 'row wrap gap12 end' },
-        field(t('conn.bindDn'), txt('ldap', 'bindDn', { placeholder: 'CN=svc_reports,OU=Service,DC=company,DC=local' }), true),
-        secret('ldap', t('conn.password'))),
-      h('div', { class: 'row wrap gap12 end' },
-        field(t('conn.userFilter'), txt('ldap', 'userFilter'), true),
-        field(t('conn.empidAttr'), txt('ldap', 'empidAttr', { placeholder: 'employeeID' }), true)),
-      h('div', { class: 'row wrap gap16' }, chk('ldap', 'startTls', t('conn.startTls')), chk('ldap', 'tlsReject', t('conn.tlsReject'))),
+        field(t('conn.empidAttr'), txt('ldap', 'empidAttr', { placeholder: 'employeeID' })),
+        field(t('conn.baseDnOpt'), txt('ldap', 'baseDn', { placeholder: 'DC=company,DC=local' }))),
+      h('div', { class: 'row wrap gap16' },
+        h('label', { class: 'row gap8' }, h('input', { type: 'checkbox', checked: !!state.ldap.config.ssl, onchange: (e) => {
+          state.ldap.config.ssl = e.target.checked;
+          state.ldap.config.port = e.target.checked ? 636 : 389;
+          draw();
+        } }), t('conn.adSsl')),
+        chk('ldap', 'tlsReject', t('conn.tlsReject'))),
       h('div', { class: 'row wrap gap12 end' },
         field(t('conn.testLogin'), h('input', { class: 'inp', autocomplete: 'off', value: state.ldap.testLogin, oninput: (e) => { state.ldap.testLogin = e.target.value; } })),
         field(t('conn.testPassword'), h('input', { class: 'inp', type: 'password', autocomplete: 'new-password', value: state.ldap.testPassword, oninput: (e) => { state.ldap.testPassword = e.target.value; } }))),
