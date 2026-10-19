@@ -7,6 +7,7 @@ import { migrate } from './migrate.js';
 import { api } from './api.js';
 import { pool } from './db.js';
 import { seedSales } from './demo-sales.js';
+import { seedDemoReports } from './demo-reports.js';
 import { securityHeaders, sameOrigin, rateLimit, appGate, gzipJson } from './security.js';
 
 const app = express();
@@ -61,6 +62,14 @@ if (process.env.SEED_SALES_DEMO !== '0') {
     } catch (e) {
       await c.query('ROLLBACK').catch(() => {});
       console.error('Satış test datası yaradılmadı:', e.message);
+    }
+    try {
+      await c.query('BEGIN');
+      await seedDemoReports(c);
+      await c.query('COMMIT');
+    } catch (e) {
+      await c.query('ROLLBACK').catch(() => {});
+      console.error('Test hesabatları yaradılmadı:', e.message);
     } finally {
       c.release();
     }
