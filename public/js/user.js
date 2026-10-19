@@ -94,7 +94,7 @@ export async function userPage(root, reportId) {
   function drawParams() {
     clear(
       paramsBox,
-      meta.params.map((p) => h('label', { class: 'fld' }, p.label || p.name, p.required ? h('span', { class: 'req' }, ' *') : null, paramInput(p))),
+      meta.params.map((p) => h('label', { class: 'fld' }, h('span', {}, p.label || p.name, p.required ? h('span', { class: 'req' }, ' *') : null), paramInput(p))),
       h('button', { class: 'btn primary', disabled: running, onclick: run }, running ? t('running') : t('run')),
       h('div', { class: 'grow' }),
       meta.restricted || meta.hiddenCount

@@ -166,8 +166,8 @@ export function analyze(sql, resultCols = null, known = []) {
     const k = c && (c.code ? c : columns.find((x) => x.src && String(x.src).toLowerCase() === String(c.alias ?? c.source).toLowerCase()));
     params[name] = {
       column: col,
-      label: (k && (k.label_az || k.label)) || (c && (c.alias || c.source)) || pretty(name),
-      type: k?.type && k.type !== 'text' ? k.type : null,
+      label: (k && (k.label_az || k.label)) || (c && (c.alias || c.source)) || pretty(col),
+      type: k?.type && k.type !== 'text' ? k.type : /tarix|date/i.test(col) ? 'date' : null,
     };
   }
   return { columns, params, star: parsed.some((p) => p.star) };

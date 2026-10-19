@@ -49,3 +49,10 @@ test('analyze: parametr sütunun adını və tipini alır', () => {
   assert.equal(r.params.bas.label, 'Tarix');
   assert.equal(r.params.bas.type, 'date');
 });
+
+test('analyze: sütun SELECT-də yoxdursa, ad və tip sütun adından təxmin olunur', () => {
+  const r = analyze('SELECT a FROM s WHERE s.tarix >= @bas AND s.filial_kod = @f');
+  assert.equal(r.params.bas.label, 'Tarix');
+  assert.equal(r.params.bas.type, 'date');
+  assert.equal(r.params.f.label, 'Filial kod');
+});
