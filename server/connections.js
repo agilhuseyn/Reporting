@@ -32,9 +32,17 @@ export function cleanConfig(kind, c = {}) {
     const port = Number(c.port) || (type === 'mssql' ? 1433 : 5432);
     if (!(port >= 1 && port <= 65535)) throw new HttpError(400, 'Port yanlışdır');
     const database = str(c.database, 128);
-    const user = str(c.user, 128);
+    let user = str(c.user, 128);
+    const authType = type === 'mssql' && c.authType === 'windows' ? 'windows' : 'sql';
+    let domain = authType === 'windows' ? str(c.domain, 128) : '';
+    if (authType === 'windows') {
+      // DOMAIN\istifadeci və ya istifadeci@domain yazılıbsa ayır
+      const m = user.match(/^([^\\@]+)\\(.+)$/) || user.match(/^(.+)@([^@]+)$/);
+      if (m) { if (user.includes('\\')) { domain = domain || m[1]; user = m[2]; } else { domain = domain || m[2]; user = m[1]; } }
+      if (!domain) throw new HttpError(400, 'Windows girişi üçün domen lazımdır (məs. COMPANY)');
+    }
     if (!database || !user) throw new HttpError(400, 'Baza və istifadəçi adı məcburidir');
-    return { type, host, port, database, user, encrypt: !!c.encrypt, trustServerCertificate: !!c.trustServerCertificate, ssl: !!c.ssl };
+    return { type, authType, domain, host, port, database, user, encrypt: !!c.encrypt, trustServerCertificate: !!c.trustServerCertificate, ssl: !!c.ssl };
   }
   const url = str(c.url, 255);
   if (!/^ldaps?:\/\/[^\s]+$/i.test(url)) throw new HttpError(400, 'LDAP ünvanı ldap:// və ya ldaps:// ilə başlamalıdır');
@@ -82,8 +90,11 @@ async function buildMssql(cfg, password) {
   } catch {
     throw new HttpError(500, 'mssql paketi quraşdırılmayıb (npm install)');
   }
+  const cred = cfg.authType === 'windows'
+    ? { authentication: { type: 'ntlm', options: { domain: cfg.domain, userName: cfg.user, password } } }
+    : { user: cfg.user, password };
   const p = new mssql.ConnectionPool({
-    server: cfg.host, port: cfg.port, database: cfg.database, user: cfg.user, password,
+    server: cfg.host, port: cfg.port, database: cfg.database, ...cred,
     options: { encrypt: cfg.encrypt, trustServerCertificate: cfg.trustServerCertificate, readOnlyIntent: true },
     requestTimeout: 30000, connectionTimeout: 10000, pool: { max: 5 },
   });

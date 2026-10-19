@@ -2,7 +2,7 @@ import { h, clear, toast } from './dom.js';
 import { api } from './api.js';
 import { t } from './i18n.js';
 
-const SQL_DEFAULT = { type: 'mssql', host: '', port: 1433, database: '', user: '', encrypt: true, trustServerCertificate: false, ssl: false };
+const SQL_DEFAULT = { type: 'mssql', authType: 'sql', domain: '', host: '', port: 1433, database: '', user: '', encrypt: true, trustServerCertificate: false, ssl: false };
 const LDAP_DEFAULT = { url: 'ldaps://', baseDn: '', bindDn: '', userFilter: '(sAMAccountName={login})', empidAttr: '', startTls: false, tlsReject: true };
 
 export async function adminConnections(root) {
@@ -110,6 +110,10 @@ export async function adminConnections(root) {
         field(t('conn.port'), txt('sql', 'port', { type: 'number', number: true }))),
       h('div', { class: 'row wrap gap12 end' },
         field(t('conn.database'), txt('sql', 'database'), true),
+        c.type === 'mssql' ? field(t('conn.authType'), h('select', { class: 'inp', onchange: (e) => { c.authType = e.target.value; draw(); } },
+          h('option', { value: 'sql', selected: c.authType !== 'windows' }, t('conn.authSql')),
+          h('option', { value: 'windows', selected: c.authType === 'windows' }, t('conn.authWin')))) : null,
+        c.type === 'mssql' && c.authType === 'windows' ? field(t('conn.domain'), txt('sql', 'domain', { placeholder: 'COMPANY' }), true) : null,
         field(t('conn.user'), txt('sql', 'user'), true),
         secret('sql', t('conn.password'))),
       h('div', { class: 'row wrap gap16' },

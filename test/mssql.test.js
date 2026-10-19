@@ -70,3 +70,12 @@ test('secret: şifrələ / aç', () => {
   const [iv, tag, enc] = e.split('.');
   assert.throws(() => decrypt([iv, Buffer.alloc(16).toString('base64'), enc].join('.')));
 });
+
+test('windows auth: DOMAIN\\user ayrılır', async () => {
+  process.env.DATABASE_URL ||= 'postgres://x:y@127.0.0.1:1/z';
+  const { cleanConfig } = await import('../server/connections.js');
+  const c = cleanConfig('sql', { type: 'mssql', authType: 'windows', host: 'sql01', database: 'd', user: 'COMP\\svc_rep' });
+  assert.equal(c.domain, 'COMP'); assert.equal(c.user, 'svc_rep'); assert.equal(c.authType, 'windows');
+  assert.throws(() => cleanConfig('sql', { type: 'mssql', authType: 'windows', host: 'sql01', database: 'd', user: 'svc' }));
+  assert.equal(cleanConfig('sql', { type: 'mssql', host: 'sql01', database: 'd', user: 'sa' }).authType, 'sql');
+});
