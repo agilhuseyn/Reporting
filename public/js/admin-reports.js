@@ -1,6 +1,8 @@
 import { h, clear, toast } from './dom.js';
 import { api } from './api.js';
 import { t, label, fmtNum } from './i18n.js';
+import { collapsible } from './sidelist.js';
+import { permEditor, loadPerm, savePerm } from './admin-perms.js';
 
 const blank = () => ({
   id: null, code: '', name_az: '', name_en: '', name_ru: '', category_id: null, kind: 'query', description: '',
@@ -21,38 +23,54 @@ export async function adminReports(root, me) {
   const testVals = {};
   let drillTest = null;
   let drillVal = '';
+  let grants = null; // bu hesabata yetkisi olanlar (yalnız 'permissions' səlahiyyəti olanlar görür)
+  let subjects = null;
+  let subjectsLoading = false;
+  let q = '';
+  const canPerm = me.caps.includes('permissions');
+  const cat = collapsible('hp.closed.admin');
 
   async function loadList() {
     [list, cats] = await Promise.all([api('/api/admin/reports'), api('/api/admin/categories')]);
     drawSide();
   }
 
+  const searchBox = h('input', { class: 'inp', placeholder: t('searchReport'), 'aria-label': t('searchReport'),
+    oninput: (e) => { q = e.target.value; drawSide(); } });
+  const headBox = h('div', { class: 'pad row side-search' }, h('b', {}, t('reports')), h('div', { class: 'grow' }));
+  const listBox = h('div');
+  clear(side, headBox, h('div', { class: 'pad' }, searchBox), listBox);
+  if (canEdit) headBox.append(h('button', { class: 'btn primary sm', onclick: () => { rep = blank(); testOut = null; grants = null; drawSide(); drawEditor(); } }, `+ ${t('new')}`));
+
   function drawSide() {
     const groups = new Map();
     for (const r of list) {
+      if (q && !label(r, 'name').toLowerCase().includes(q.toLowerCase())) continue;
       const c = cats.find((x) => x.id === r.category_id);
       const key = c ? label(c, 'name') : t('other');
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(r);
     }
+    const searching = !!q.trim();
     clear(
-      side,
-      h('div', { class: 'pad row' }, h('b', {}, t('reports')), h('div', { class: 'grow' }),
-        canEdit ? h('button', { class: 'btn primary sm', onclick: () => { rep = blank(); testOut = null; drawEditor(); } }, `+ ${t('new')}`) : null),
+      listBox,
       [...groups.entries()].map(([g, items]) => h('div', {},
-        h('div', { class: 'grp' }, g.toUpperCase()),
-        items.map((r) => h('a', { href: '#/admin/reports', class: `item ${rep?.id === r.id ? 'on' : ''}`,
+        cat.header(g, items.length, searching, drawSide),
+        cat.isOpen(g, searching) ? items.map((r) => h('a', { href: '#/admin/reports', class: `item ${rep?.id === r.id ? 'on' : ''}`,
           onclick: (e) => { e.preventDefault(); openReport(r.id); } },
         h('span', {}, label(r, 'name'), r.active ? '' : ` (${t('inactive')})`),
-        h('span', { class: 'tag' }, t(`kind.${r.kind}`))))))
+        h('span', { class: 'tag' }, t(`kind.${r.kind}`)))) : null)),
+      list.length && !groups.size ? h('div', { class: 'note' }, t('noMatch')) : null
     );
   }
 
   async function openReport(id) {
     rep = await api(`/api/admin/reports/${id}`);
     testOut = null;
+    grants = null;
     drawSide();
     drawEditor();
+    await loadGrants();
   }
 
   const field = (title, input) => h('label', { class: 'fld' }, title, input);
@@ -188,6 +206,95 @@ export async function adminReports(root, me) {
               h('tbody', {}, d.columns.map(dcol))))) : null) : null));
   }
 
+
+  // ---- Bu hesabata verilmiş yetkilər: burada görünür və buradan verilir/dəyişdirilir ----
+  async function loadGrants() {
+    if (!canPerm || !rep?.id) return;
+    const id = rep.id;
+    try {
+      const g = await api(`/api/admin/reports/${id}/grants`);
+      if (rep?.id !== id) return; // arada başqa hesabat açılıb
+      grants = g;
+    } catch (e) {
+      grants = null;
+      toast(e.message, 'err');
+    }
+    drawEditor();
+  }
+
+  function grantModal(subject, cfg, repCols) {
+    const body = h('div', { class: 'modal-body col gap12 pad' });
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+      h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+        h('div', { class: 'toolbar' }, h('b', {}, subject.name), h('span', { class: 'tag' }, t(`subj.${subject.type}`)), h('div', { class: 'grow' }),
+          h('button', { class: 'btn sm', onclick: close }, t('close'))),
+        body));
+    const draw = () => clear(body, ...permEditor({ cfg, repCols, redraw: draw, onSave: async () => {
+      try {
+        await savePerm(subject, rep.id, cfg);
+        toast(t('saved'));
+        close();
+        await loadGrants();
+      } catch (e) {
+        toast(e.message, 'err');
+      }
+    } }));
+    draw();
+    document.body.append(overlay);
+    document.addEventListener('keydown', onKey);
+  }
+
+  async function editGrant(subject) {
+    try {
+      const [cfg, r] = await Promise.all([loadPerm(subject, rep.id), api(`/api/admin/reports/${rep.id}`)]);
+      grantModal(subject, cfg, r.columns);
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  }
+
+  async function addGrant(type, id) {
+    if (!id) return;
+    const s = (type === 'position' ? subjects.positions : type === 'group' ? subjects.groups : subjects.users).find((x) => x.id === id);
+    try {
+      const r = await api(`/api/admin/reports/${rep.id}`);
+      grantModal({ type, id, name: type === 'user' ? `${s.name} · ${s.empid}` : s.name }, { granted: true, canExport: false, columns: {}, rules: [] }, r.columns);
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  }
+
+  let addType = 'position';
+  function grantsCard() {
+    if (!canPerm || !rep.id) return null;
+    const pickers = () => {
+      if (!subjects) return h('span', { class: 'muted small' }, t('running'));
+      const taken = new Set((grants || []).filter((g) => g.type === addType).map((g) => g.id));
+      const opts = (addType === 'position' ? subjects.positions : addType === 'group' ? subjects.groups : subjects.users.filter((u) => u.active))
+        .filter((x) => !taken.has(x.id));
+      const sel = h('select', { class: 'inp sm', 'aria-label': t('permWho') }, h('option', { value: '' }, t('pickSubjectShort')),
+        opts.map((x) => h('option', { value: x.id }, addType === 'user' ? `${x.name} · ${x.empid}` : x.name)));
+      return h('div', { class: 'row gap8' }, sel, h('button', { class: 'btn sm', onclick: () => addGrant(addType, sel.value) }, `+ ${t('addGrant')}`));
+    };
+    const typeSel = h('select', { class: 'inp sm', 'aria-label': t('permWho'), onchange: (e) => { addType = e.target.value; drawEditor(); } },
+      ['position', 'group', 'user'].map((k) => h('option', { value: k, selected: k === addType }, t(`subj.${k}`))));
+    if (!subjects && !subjectsLoading) {
+      subjectsLoading = true;
+      api('/api/admin/subjects').then((x) => { subjects = x; drawEditor(); }).catch(() => {}).finally(() => { subjectsLoading = false; });
+    }
+    return h('div', { class: 'card' },
+      h('div', { class: 'toolbar' }, h('b', {}, t('reportGrants')), h('div', { class: 'grow' }), typeSel, pickers()),
+      grants === null ? h('div', { class: 'note' }, t('running'))
+        : grants.length ? grants.map((g) => h('div', { class: 'grant-row' },
+          h('span', { class: 'tag' }, t(`subj.${g.type}`)),
+          h('div', { class: 'nm' }, g.name),
+          h('span', { class: 'muted small' }, [g.canExport ? t('canExport') : '', g.cols ? `${g.cols} ${t('colRulesShort')}` : '', g.rules ? `${g.rules} ${t('valRulesShort')}` : ''].filter(Boolean).join(' · ')),
+          h('button', { class: 'btn sm', onclick: () => editGrant(g) }, t('edit'))))
+          : h('div', { class: 'note' }, t('noGrants')));
+  }
+
   async function save() {
     try {
       if (rep.drill?.sql && !rep.drill.columns.length) await drillFind(true);
@@ -244,6 +351,7 @@ export async function adminReports(root, me) {
       clear(main, h('div', { class: 'empty' }, t('pickReport')));
       return;
     }
+    const keepScroll = main.scrollTop;
     const catSel = h('select', { class: 'inp', disabled: !canEdit, onchange: (e) => { rep.category_id = e.target.value || null; } },
       h('option', { value: '' }, t('other')),
       cats.map((c) => h('option', { value: c.id, selected: c.id === rep.category_id }, label(c, 'name'))));
@@ -297,11 +405,13 @@ export async function adminReports(root, me) {
               h('tbody', {}, rep.columns.map(columnRow))))
           : h('div', { class: 'note' }, t('noColumns'))),
       drillCard(),
+      grantsCard(),
       rep.versions?.length ? h('div', { class: 'card pad' },
         h('b', {}, t('versions')),
         h('div', { class: 'col gap6 mt8' }, rep.versions.map((v) => h('div', { class: 'small' },
           `v${v.version} · ${v.changed_name || v.changed_by || ''} · ${new Date(v.changed_at).toLocaleString()}`)))) : null
     );
+    main.scrollTop = keepScroll;
   }
 
   try {

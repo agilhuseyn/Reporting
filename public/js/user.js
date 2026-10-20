@@ -3,6 +3,7 @@ import { api } from './api.js';
 import { t, label, fmtNum } from './i18n.js';
 import { resultTable } from './table.js';
 import { pivotView } from './pivot.js';
+import { collapsible } from './sidelist.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -15,7 +16,7 @@ function defaultFor(p) {
 
 export async function userPage(root, reportId) {
   const side = h('aside', { class: 'side' });
-  const main = h('main', { class: 'content col gap16' });
+  const main = h('main', { class: 'content col gap16 fit' });
   clear(root, h('div', { class: 'layout' }, side, main));
 
   let list = [];
@@ -26,6 +27,12 @@ export async function userPage(root, reportId) {
     return;
   }
   let q = '';
+  const cat = collapsible('hp.closed.user');
+  const search = h('input', { class: 'inp', placeholder: t('searchReport'), 'aria-label': t('searchReport'),
+    oninput: (e) => { q = e.target.value; drawSide(); } });
+  const listBox = h('div');
+  const foot = h('div', { class: 'note foot' }, t('onlyYourReports'));
+  clear(side, h('div', { class: 'pad side-search' }, search), listBox, foot);
 
   function drawSide() {
     const groups = new Map();
@@ -35,15 +42,14 @@ export async function userPage(root, reportId) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(r);
     }
+    const searching = !!q.trim();
     clear(
-      side,
-      h('div', { class: 'pad' }, h('input', { class: 'inp', placeholder: t('searchReport'), 'aria-label': t('searchReport'),
-        oninput: (e) => { q = e.target.value; drawSide(); } })),
+      listBox,
       list.length === 0 ? h('div', { class: 'note' }, t('noReports')) : null,
       [...groups.entries()].map(([g, items]) => h('div', {},
-        h('div', { class: 'grp' }, g.toUpperCase()),
-        items.map((r) => h('a', { href: `#/reports/${r.id}`, class: `item ${String(r.id) === String(reportId) ? 'on' : ''}` }, label(r, 'name'))))),
-      h('div', { class: 'note foot' }, t('onlyYourReports'))
+        cat.header(g, items.length, searching, drawSide),
+        cat.isOpen(g, searching) ? items.map((r) => h('a', { href: `#/reports/${r.id}`, class: `item ${String(r.id) === String(reportId) ? 'on' : ''}` }, label(r, 'name'))) : null)),
+      list.length && !groups.size ? h('div', { class: 'note' }, t('noMatch')) : null
     );
   }
   drawSide();
@@ -75,7 +81,7 @@ export async function userPage(root, reportId) {
   }
 
   const paramsBox = h('div', { class: 'card pad row wrap gap16 end' });
-  const resultBox = h('div', { class: 'col gap12' });
+  const resultBox = h('div', { class: 'col gap12 fill' });
   let result = null;
   let usedParams = {}; // nəticənin alındığı parametrlər (detal eyni parametrlərlə açılır)
   let mode = 'table';
@@ -121,9 +127,9 @@ export async function userPage(root, reportId) {
       ? resultTable({
           columns: result.columns, rows: result.rows, canExport: result.canExport, fileName: label(meta, 'name'),
           onExport: (n) => api(`/api/reports/${id}/export-log`, { method: 'POST', body: { rows: n } }).catch(() => {}),
-          drillColumn: meta.drill?.column, onDrill: openDetail,
+          drillColumn: meta.drill?.column, onDrill: openDetail, fill: true,
         }).el
-      : pivotView({ columns: result.columns, rows: result.rows });
+      : h('div', { class: 'scrollbox fill' }, pivotView({ columns: result.columns, rows: result.rows }));
     clear(
       resultBox,
       h('div', { class: 'row gap12' }, seg, info),

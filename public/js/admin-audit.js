@@ -3,7 +3,7 @@ import { api } from './api.js';
 import { t } from './i18n.js';
 
 export async function adminAudit(root) {
-  const main = h('main', { class: 'content col gap16 wide' });
+  const main = h('main', { class: 'content col gap16 wide fit' });
   clear(root, h('div', { class: 'single' }, main));
   let rows = [];
   let q = '';
@@ -31,7 +31,7 @@ export async function adminAudit(root) {
   clear(
     main,
     h('h1', {}, t('audit')),
-    h('div', { class: 'card' },
+    h('div', { class: 'card fill' },
       h('div', { class: 'toolbar' }, h('input', { class: 'inp', placeholder: t('searchTable'), 'aria-label': t('searchTable'), oninput: (e) => { q = e.target.value; draw(); } })),
       h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
         h('thead', {}, h('tr', {}, [t('time'), t('user'), t('action'), t('detail')].map((x) => h('th', {}, x)))), body)))

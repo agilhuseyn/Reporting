@@ -16,7 +16,7 @@ function cellText(col, v) {
 // Nəticə cədvəli: çeşidləmə, sütun filtri, axtarış, səhifələmə, sətir seçimi, kopyalama.
 // columns: [{code,label_*,type,masked}], rows: massiv massivi.
 // drillColumn + onDrill: həmin sütunun dəyərinə basanda detal açılır (admin hesabatda təyin edir).
-export function resultTable({ columns: cols, rows, canExport, fileName, onExport, drillColumn, onDrill }) {
+export function resultTable({ columns: cols, rows, canExport, fileName, onExport, drillColumn, onDrill, fill }) {
   // Hamısı tam ədəddirsə, onluq göstərmirik (say, say-sütunları)
   const columns = cols.map((c, ci) => {
     if (c.type !== 'number' || c.masked) return c;
@@ -191,7 +191,7 @@ export function resultTable({ columns: cols, rows, canExport, fileName, onExport
     } }, t('exportCsv')) : null
   );
 
-  const el = h('div', { class: 'card clip' },
+  const el = h('div', { class: `card clip${fill ? ' fill' : ''}` },
     toolbar,
     h('div', { class: 'xscroll' }, h('table', { class: 'tbl' }, thead, tbody)),
     h('div', { class: 'foot' }, info, h('div', { class: 'grow' }), pager)

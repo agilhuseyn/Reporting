@@ -369,6 +369,25 @@ admin.get('/permissions/overview', needCap('permissions'), wrap(async (req, res)
   res.json(r.rows);
 }));
 
+// Bir hesabata kimlərin yetkisi var (hesabatın redaktə ekranı üçün)
+admin.get('/reports/:id/grants', needCap('permissions'), wrap(async (req, res) => {
+  const rid = await keyOf('report', req.params.id);
+  const r = await pool.query(
+    `SELECT p.subject_type AS type, p.subject_id AS key, p.can_export,
+       CASE p.subject_type
+         WHEN 'position' THEN (SELECT x.uid::text || '|' || x.name FROM portal.positions x WHERE x.id::text = p.subject_id)
+         WHEN 'group' THEN (SELECT x.uid::text || '|' || x.name FROM portal.groups x WHERE x.id::text = p.subject_id)
+         ELSE (SELECT x.uid::text || '|' || x.name || ' · ' || x.empid FROM portal.users x WHERE x.empid::text = p.subject_id)
+       END AS who,
+       (SELECT count(*)::int FROM portal.perm_column c WHERE c.subject_type=p.subject_type AND c.subject_id=p.subject_id AND c.report_id=p.report_id) AS cols,
+       (SELECT count(*)::int FROM portal.perm_value v WHERE v.subject_type=p.subject_type AND v.subject_id=p.subject_id AND v.report_id=p.report_id) AS rules
+     FROM portal.perm_report p WHERE p.report_id=$1`, [rid]);
+  res.json(r.rows.filter((x) => x.who).map((x) => {
+    const i = x.who.indexOf('|');
+    return { type: x.type, id: x.who.slice(0, i), name: x.who.slice(i + 1), canExport: x.can_export, cols: x.cols, rules: x.rules };
+  }).sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, 'az')));
+}));
+
 admin.put('/permissions', needCap('permissions'), wrap(async (req, res) => {
   const [type, id] = await subj(req.body || {});
   const b = req.body;

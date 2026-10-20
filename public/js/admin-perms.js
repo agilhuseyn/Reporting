@@ -4,6 +4,64 @@ import { t, label } from './i18n.js';
 
 const OPS = ['in', 'eq', 'gte', 'lte'];
 
+// Yetki redaktoru: hesab (granted/export), sütun rejimləri və dəyər qaydaları.
+// Yetkilər səhifəsində və hesabatın redaktə pəncərəsində eyni kod işləyir.
+export function permEditor({ cfg, repCols, redraw, onSave }) {
+  function modeCell(code, mode) {
+    const cur = cfg.columns[code] || 'none';
+    return h('td', { class: 'c' }, h('input', { type: 'radio', name: `m_${code}`, checked: cur === mode, 'aria-label': t(`mode.${mode}`),
+      onchange: () => {
+        if (mode === 'none') delete cfg.columns[code];
+        else cfg.columns[code] = mode;
+      } }));
+  }
+
+  function rulesTable() {
+    const colSel = (r) => h('select', { class: 'inp sm', onchange: (e) => { r.column = e.target.value; } },
+      repCols.map((c) => h('option', { value: c.code, selected: c.code === r.column }, c.code)));
+    const opSel = (r) => h('select', { class: 'inp sm', onchange: (e) => { r.op = e.target.value; } },
+      OPS.map((o) => h('option', { value: o, selected: o === r.op }, t(`op.${o}`))));
+    const valText = (v) => (Array.isArray(v) ? v.join(', ') : String(v ?? ''));
+    return h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
+      h('thead', {}, h('tr', {}, [t('column'), t('condition'), t('value'), ''].map((x) => h('th', {}, x)))),
+      h('tbody', {}, cfg.rules.map((r, i) => h('tr', {},
+        h('td', {}, colSel(r)), h('td', {}, opSel(r)),
+        h('td', {}, h('input', { class: 'inp sm', value: valText(r.value), placeholder: 'Bakı, Sumqayıt  |  $me  |  $ym-12',
+          oninput: (e) => {
+            const raw = e.target.value;
+            r.value = r.op === 'in' ? raw.split(',').map((x) => x.trim()).filter(Boolean) : raw.trim();
+          } })),
+        h('td', {}, h('button', { class: 'btn sm', 'aria-label': t('remove'), onclick: () => { cfg.rules.splice(i, 1); redraw(); } }, '×')))))));
+  }
+
+  return [
+    h('div', { class: 'card pad row wrap gap16' },
+      h('label', { class: 'row gap8' }, h('input', { type: 'checkbox', checked: cfg.granted, onchange: (e) => { cfg.granted = e.target.checked; } }), h('b', {}, t('grantReport'))),
+      h('label', { class: 'row gap8' }, h('input', { type: 'checkbox', checked: cfg.canExport, onchange: (e) => { cfg.canExport = e.target.checked; } }), t('canExport')),
+      h('div', { class: 'grow' }),
+      h('button', { class: 'btn primary', onclick: onSave }, t('save'))),
+    h('div', { class: 'card' },
+      h('div', { class: 'toolbar' }, h('b', {}, `2 · ${t('columnAccess')}`), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('columnHint'))),
+      h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
+        h('thead', {}, h('tr', {}, h('th', {}, t('code')), h('th', {}, t('name')),
+          ['none', 'show', 'mask', 'hide'].map((m) => h('th', { class: 'c' }, t(`mode.${m}`))))),
+        h('tbody', {}, repCols.map((c) => h('tr', {}, h('td', { class: 'mono' }, c.code), h('td', {}, label(c, 'label')),
+          ['none', 'show', 'mask', 'hide'].map((m) => modeCell(c.code, m)))))))),
+    h('div', { class: 'card' },
+      h('div', { class: 'toolbar' }, h('b', {}, `3 · ${t('valueAccess')}`), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('valueHint'))),
+      cfg.rules.length ? rulesTable() : h('div', { class: 'note' }, t('noRules')),
+      h('div', { class: 'foot' }, h('button', { class: 'btn sm', onclick: () => {
+        cfg.rules.push({ column: repCols[0]?.code, op: 'in', value: [] });
+        redraw();
+      } }, `+ ${t('addRule')}`))),
+  ];
+}
+
+export const loadPerm = (subject, reportId) =>
+  api(`/api/admin/permissions?subjectType=${subject.type}&subjectId=${encodeURIComponent(subject.id)}&reportId=${reportId}`);
+export const savePerm = (subject, reportId, cfg) =>
+  api('/api/admin/permissions', { method: 'PUT', body: { subjectType: subject.type, subjectId: subject.id, reportId, ...cfg } });
+
 export async function adminPerms(root) {
   const side = h('aside', { class: 'side' });
   const main = h('main', { class: 'content col gap16' });
@@ -69,7 +127,7 @@ export async function adminPerms(root) {
   async function openRep(id) {
     repId = id;
     const [p, r] = await Promise.all([
-      api(`/api/admin/permissions?subjectType=${subject.type}&subjectId=${encodeURIComponent(subject.id)}&reportId=${id}`),
+      loadPerm(subject, id),
       api(`/api/admin/reports/${id}`),
     ]);
     cfg = p;
@@ -79,7 +137,7 @@ export async function adminPerms(root) {
 
   async function save() {
     try {
-      await api('/api/admin/permissions', { method: 'PUT', body: { subjectType: subject.type, subjectId: subject.id, reportId: repId, ...cfg } });
+      await savePerm(subject, repId, cfg);
       if (cfg.granted) overview.set(repId, { report_id: repId, can_export: cfg.canExport });
       else overview.delete(repId);
       toast(t('saved'));
@@ -87,33 +145,6 @@ export async function adminPerms(root) {
     } catch (e) {
       toast(e.message, 'err');
     }
-  }
-
-  function modeCell(code, mode) {
-    const cur = cfg.columns[code] || 'none';
-    return h('td', { class: 'c' }, h('input', { type: 'radio', name: `m_${code}`, checked: cur === mode, 'aria-label': t(`mode.${mode}`),
-      onchange: () => {
-        if (mode === 'none') delete cfg.columns[code];
-        else cfg.columns[code] = mode;
-      } }));
-  }
-
-  function rulesTable() {
-    const colSel = (r) => h('select', { class: 'inp sm', onchange: (e) => { r.column = e.target.value; } },
-      repCols.map((c) => h('option', { value: c.code, selected: c.code === r.column }, c.code)));
-    const opSel = (r) => h('select', { class: 'inp sm', onchange: (e) => { r.op = e.target.value; } },
-      OPS.map((o) => h('option', { value: o, selected: o === r.op }, t(`op.${o}`))));
-    const valText = (v) => (Array.isArray(v) ? v.join(', ') : String(v ?? ''));
-    return h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
-      h('thead', {}, h('tr', {}, [t('column'), t('condition'), t('value'), ''].map((x) => h('th', {}, x)))),
-      h('tbody', {}, cfg.rules.map((r, i) => h('tr', {},
-        h('td', {}, colSel(r)), h('td', {}, opSel(r)),
-        h('td', {}, h('input', { class: 'inp sm', value: valText(r.value), placeholder: 'Bakı, Sumqayıt  |  $me  |  $ym-12',
-          oninput: (e) => {
-            const raw = e.target.value;
-            r.value = r.op === 'in' ? raw.split(',').map((x) => x.trim()).filter(Boolean) : raw.trim();
-          } })),
-        h('td', {}, h('button', { class: 'btn sm', 'aria-label': t('remove'), onclick: () => { cfg.rules.splice(i, 1); drawMain(); } }, '×')))))));
   }
 
   async function runEffective() {
@@ -164,25 +195,7 @@ export async function adminPerms(root) {
     clear(
       main,
       repList,
-      h('div', { class: 'card pad row wrap gap16' },
-        h('label', { class: 'row gap8' }, h('input', { type: 'checkbox', checked: cfg.granted, onchange: (e) => { cfg.granted = e.target.checked; } }), h('b', {}, t('grantReport'))),
-        h('label', { class: 'row gap8' }, h('input', { type: 'checkbox', checked: cfg.canExport, onchange: (e) => { cfg.canExport = e.target.checked; } }), t('canExport')),
-        h('div', { class: 'grow' }),
-        h('button', { class: 'btn primary', onclick: save }, t('save'))),
-      h('div', { class: 'card' },
-        h('div', { class: 'toolbar' }, h('b', {}, `2 · ${t('columnAccess')}`), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('columnHint'))),
-        h('div', { class: 'xscroll' }, h('table', { class: 'tbl' },
-          h('thead', {}, h('tr', {}, h('th', {}, t('code')), h('th', {}, t('name')),
-            ['none', 'show', 'mask', 'hide'].map((m) => h('th', { class: 'c' }, t(`mode.${m}`))))),
-          h('tbody', {}, repCols.map((c) => h('tr', {}, h('td', { class: 'mono' }, c.code), h('td', {}, label(c, 'label')),
-            ['none', 'show', 'mask', 'hide'].map((m) => modeCell(c.code, m)))))))),
-      h('div', { class: 'card' },
-        h('div', { class: 'toolbar' }, h('b', {}, `3 · ${t('valueAccess')}`), h('div', { class: 'grow' }), h('span', { class: 'muted small' }, t('valueHint'))),
-        cfg.rules.length ? rulesTable() : h('div', { class: 'note' }, t('noRules')),
-        h('div', { class: 'foot' }, h('button', { class: 'btn sm', onclick: () => {
-          cfg.rules.push({ column: repCols[0]?.code, op: 'in', value: [] });
-          drawMain();
-        } }, `+ ${t('addRule')}`))),
+      ...permEditor({ cfg, repCols, redraw: drawMain, onSave: save }),
       effPanel()
     );
   }
